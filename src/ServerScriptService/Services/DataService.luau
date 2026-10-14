@@ -4,8 +4,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local RepStorage = game:GetService("ReplicatedStorage")
 
-local GameConfig = require(RepStorage.Configs.GameConfig)
-local GhostConfig = require(RepStorage.Configs.GhostConfig)
+local GameConfig = require(RepStorage.Configs.GameConfig:Clone())
+local GhostConfig = require(RepStorage.Configs.GhostConfig:Clone())
 
 local Network = RepStorage.Network
 local OfflineRewardReady = Network:WaitForChild("OfflineRewardReady")
@@ -23,8 +23,21 @@ local saveLocks = {}        -- [userId] = boolean
 local activeProfiles = {}   -- [userId] = live profile reference
 local isClosing = false
 
--- Reference to EconomyService (injected or required)
 local EconomyService = nil
+
+-- Generate fresh daily quests
+local function generateDailyQuests()
+	local quests = {}
+	for qId, tpl in pairs(GameConfig.DailyObjectives or {}) do
+		quests[qId] = {
+			Id = qId,
+			Current = 0,
+			Target = tpl.Target or 1,
+			Claimed = false,
+		}
+	end
+	return quests
+end
 
 -- Default Profile definition
 local function getFreshProfile(userId)
@@ -33,15 +46,28 @@ local function getFreshProfile(userId)
 		UserId = userId,
 		Coins = GameConfig.StartingCoins or 100,
 		Ectoplasm = GameConfig.StartingEctoplasm or 0,
+		FloorsUnlocked = {
+			[1] = true,
+			[2] = false,
+		},
 		RoomLevels = {
 			Room1 = 1,
 			Room2 = 1,
+			Room3 = 1,
+			Room4 = 1,
 		},
 		DiscoveredGhosts = {}, -- [ghostId] = { Id = ghostId, Level = 1, CopiesOwned = 1, DiscoveredAt = os.time() }
 		AssignedStaff = {
 			[1] = nil,
 			[2] = nil,
 		},
+		ReputationStars = 0,
+		DailyObjectives = {
+			DayTimestamp = os.time(),
+			Quests = generateDailyQuests(),
+		},
+		ProcessedPurchases = {},
+		SupernaturalBoostUntil = 0,
 		TutorialStep = 1,
 		TutorialDismissed = false,
 		TotalGuestsServed = 0,
@@ -74,7 +100,7 @@ local function migrateProfile(raw, userId)
 	migrated.SchemaVersion = CURRENT_SCHEMA_VERSION
 	migrated.UserId = userId
 
-	-- Validate currencies
+	-- Currencies
 	if type(raw.Coins) == "number" and raw.Coins >= 0 then
 		migrated.Coins = math.floor(raw.Coins)
 	end
@@ -82,7 +108,15 @@ local function migrateProfile(raw, userId)
 		migrated.Ectoplasm = math.floor(raw.Ectoplasm)
 	end
 
-	-- Validate RoomLevels
+	-- FloorsUnlocked
+	if type(raw.FloorsUnlocked) == "table" then
+		migrated.FloorsUnlocked[1] = true
+		migrated.FloorsUnlocked[2] = raw.FloorsUnlocked[2] == true or raw.FloorsUnlocked["2"] == true
+	else
+		migrated.FloorsUnlocked = { [1] = true, [2] = false }
+	end
+
+	-- RoomLevels
 	if type(raw.RoomLevels) == "table" then
 		for roomId, defaultLv in pairs(migrated.RoomLevels) do
 			local lv = raw.RoomLevels[roomId]
@@ -92,7 +126,7 @@ local function migrateProfile(raw, userId)
 		end
 	end
 
-	-- Validate DiscoveredGhosts
+	-- DiscoveredGhosts
 	if type(raw.DiscoveredGhosts) == "table" then
 		for ghostId, gData in pairs(raw.DiscoveredGhosts) do
 			if type(gData) == "table" then
@@ -106,7 +140,7 @@ local function migrateProfile(raw, userId)
 		end
 	end
 
-	-- Validate AssignedStaff
+	-- AssignedStaff
 	if type(raw.AssignedStaff) == "table" then
 		for slot = 1, 2 do
 			local gId = raw.AssignedStaff[slot] or raw.AssignedStaff[tostring(slot)]
@@ -118,17 +152,59 @@ local function migrateProfile(raw, userId)
 		end
 	end
 
-	-- Validate Tutorial
+	-- Reputation Stars
+	if type(raw.ReputationStars) == "number" and raw.ReputationStars >= 0 then
+		migrated.ReputationStars = math.clamp(math.floor(raw.ReputationStars), 0, 5)
+	else
+		migrated.ReputationStars = 0
+	end
+
+	-- Daily Objectives (Check if reset is needed: 86400s)
+	local now = os.time()
+	if type(raw.DailyObjectives) == "table" and type(raw.DailyObjectives.DayTimestamp) == "number" then
+		local timeDiff = math.max(0, now - raw.DailyObjectives.DayTimestamp)
+		if timeDiff < 86400 and type(raw.DailyObjectives.Quests) == "table" then
+			-- Keep existing progress
+			migrated.DailyObjectives.DayTimestamp = raw.DailyObjectives.DayTimestamp
+			for qId, qData in pairs(raw.DailyObjectives.Quests) do
+				if migrated.DailyObjectives.Quests[qId] and type(qData) == "table" then
+					migrated.DailyObjectives.Quests[qId].Current = tonumber(qData.Current) or 0
+					migrated.DailyObjectives.Quests[qId].Claimed = qData.Claimed == true
+				end
+			end
+		else
+			-- New Day: generate fresh quests
+			migrated.DailyObjectives = {
+				DayTimestamp = now,
+				Quests = generateDailyQuests(),
+			}
+		end
+	else
+		migrated.DailyObjectives = {
+			DayTimestamp = now,
+			Quests = generateDailyQuests(),
+		}
+	end
+
+	-- Processed Purchases & Boosts
+	if type(raw.ProcessedPurchases) == "table" then
+		migrated.ProcessedPurchases = deepCopy(raw.ProcessedPurchases)
+	else
+		migrated.ProcessedPurchases = {}
+	end
+	if type(raw.SupernaturalBoostUntil) == "number" and raw.SupernaturalBoostUntil > now then
+		migrated.SupernaturalBoostUntil = raw.SupernaturalBoostUntil
+	else
+		migrated.SupernaturalBoostUntil = 0
+	end
+
+	-- Tutorial
 	if type(raw.TutorialStep) == "number" and raw.TutorialStep >= 1 and raw.TutorialStep <= 6 then
 		migrated.TutorialStep = math.floor(raw.TutorialStep)
 	end
-	if raw.TutorialDismissed == true then
-		migrated.TutorialDismissed = true
-	else
-		migrated.TutorialDismissed = false
-	end
+	migrated.TutorialDismissed = raw.TutorialDismissed == true
 
-	-- Validate counters
+	-- Counters
 	if type(raw.TotalGuestsServed) == "number" and raw.TotalGuestsServed >= 0 then
 		migrated.TotalGuestsServed = math.floor(raw.TotalGuestsServed)
 	end
@@ -149,14 +225,12 @@ end
 function DataService.Init(economyService)
 	EconomyService = economyService
 	
-	-- Test DataStoreService availability
 	local success, storeOrErr = pcall(function()
 		return DataStoreService:GetDataStore(DATA_STORE_NAME)
 	end)
 
 	if success and storeOrErr then
 		liveDataStore = storeOrErr
-		-- Test a light probe to check if API permissions are enabled
 		local probeOk, _ = pcall(function()
 			liveDataStore:GetAsync("__probe_test__")
 		end)
@@ -172,7 +246,7 @@ function DataService.Init(economyService)
 		print("[Ghostshift DataService] DataStoreService unavailable; running in MockDataStore mode.")
 	end
 
-	-- Start Autosave Loop
+	-- Autosave Loop
 	task.spawn(function()
 		local interval = GameConfig.OfflineEarnings and GameConfig.OfflineEarnings.AutosaveInterval or 180
 		while not isClosing do
@@ -198,27 +272,29 @@ function DataService.CalculateOfflineEarnings(profile)
 		MinDurationSeconds = 60,    -- 1 minute
 	}
 
-	-- Clamp elapsed time to max duration (e.g. 3 hours)
 	local cappedElapsed = math.min(elapsed, config.MaxDurationSeconds or 10800)
-
-	-- If time away was less than minimum (e.g. 60s), no offline payout
 	if cappedElapsed < (config.MinDurationSeconds or 60) then
 		return nil
 	end
 
-	-- 1. Base Room Income per Guest Stay Cycle
+	-- Base Room Income per Guest Stay Cycle (include only rooms on unlocked floors)
 	local baseIncomePerCycle = 0
+	local floorsUnlocked = profile.FloorsUnlocked or { [1] = true, [2] = false }
+
 	for roomId, level in pairs(profile.RoomLevels or {}) do
 		local roomConfig = GameConfig.Rooms[roomId]
 		if roomConfig and roomConfig.Upgrades[level] then
-			baseIncomePerCycle = baseIncomePerCycle + roomConfig.Upgrades[level].Income
+			local floorIdx = roomConfig.Floor or 1
+			if floorsUnlocked[floorIdx] == true then
+				baseIncomePerCycle = baseIncomePerCycle + roomConfig.Upgrades[level].Income
+			end
 		end
 	end
 
-	-- 2. Staff Perks: Bellhop Tip Bonus & Housekeeper Cycle Reduction
+	-- Staff Perks
 	local tipBonusPerCycle = 0
 	local turnoverReduction = 0
-	local poltergeistEctoRate = 0 -- ecto per 10s
+	local poltergeistEctoRate = 0
 
 	for _, ghostId in pairs(profile.AssignedStaff or {}) do
 		if ghostId == "Bellhop" then
@@ -251,15 +327,18 @@ function DataService.CalculateOfflineEarnings(profile)
 		end
 	end
 
-	-- Effective guest cycle time: arrival + stay - turnoverReduction (minimum 6s per cycle)
+	-- Reputation Stars multiplier
+	local repStars = profile.ReputationStars or 0
+	local repMultiplier = 1.0 + repStars * (GameConfig.Reputation and GameConfig.Reputation.MultiplierPerStar or 0.15)
+
 	local standardCycle = (GameConfig.GuestArrivalInterval or 7) + (GameConfig.BaseStayDuration or 8)
 	local effectiveCycle = math.max(6, standardCycle - turnoverReduction)
 
 	local cyclesCompleted = math.floor(cappedElapsed / effectiveCycle)
-	local coinGross = cyclesCompleted * (baseIncomePerCycle + tipBonusPerCycle)
+	local coinGross = math.floor(cyclesCompleted * (baseIncomePerCycle + tipBonusPerCycle) * repMultiplier)
 	local offlineCoins = math.floor(coinGross * (config.RateMultiplier or 0.50))
 
-	-- Poltergeist Ectoplasm generation (runs every 10s)
+	-- Poltergeist Ectoplasm generation
 	local ectoGross = 0
 	if poltergeistEctoRate > 0 then
 		local ectoTicks = math.floor(cappedElapsed / 10)
@@ -308,7 +387,6 @@ function DataService.LoadPlayerProfile(player)
 			end
 		end
 	else
-		-- Fallback to session MockDataStore
 		loadSuccess = true
 		loadedData = mockSessionStore[storeKey]
 	end
@@ -332,7 +410,7 @@ function DataService.LoadPlayerProfile(player)
 		print(string.format("[DataService] Loaded profile for user %s (%d). Version: %d", player.Name, userId, profile.SchemaVersion))
 	end
 
-	-- Check for Capped Offline Earnings (only for returning players)
+	-- Check for Capped Offline Earnings
 	local offlineRewards = nil
 	if not isNew and profile.LastSaveTime and profile.LastSaveTime > 0 then
 		offlineRewards = DataService.CalculateOfflineEarnings(profile)
@@ -359,13 +437,11 @@ function DataService.SavePlayerProfile(player)
 		return false, "No active profile to save"
 	end
 
-	-- Prevent overwriting if initial load failed
 	if profile._loadFailed then
 		warn(string.format("[DataService] ABORT SAVE: Profile for user %d marked loadFailed. Preserving original DataStore data.", userId))
 		return false, "Load failed safety guard active"
 	end
 
-	-- Concurrency Lock
 	if saveLocks[userId] then
 		return false, "Save already in progress"
 	end
@@ -373,15 +449,19 @@ function DataService.SavePlayerProfile(player)
 
 	profile.LastSaveTime = os.time()
 
-	-- Prepare persistent payload (strip runtime-only tags)
 	local dataToSave = {
 		SchemaVersion = CURRENT_SCHEMA_VERSION,
 		UserId = userId,
 		Coins = profile.Coins,
 		Ectoplasm = profile.Ectoplasm,
+		FloorsUnlocked = deepCopy(profile.FloorsUnlocked),
 		RoomLevels = deepCopy(profile.RoomLevels),
 		DiscoveredGhosts = deepCopy(profile.DiscoveredGhosts),
 		AssignedStaff = deepCopy(profile.AssignedStaff),
+		ReputationStars = profile.ReputationStars or 0,
+		DailyObjectives = deepCopy(profile.DailyObjectives),
+		ProcessedPurchases = deepCopy(profile.ProcessedPurchases or {}),
+		SupernaturalBoostUntil = profile.SupernaturalBoostUntil or 0,
 		TutorialStep = profile.TutorialStep,
 		TutorialDismissed = profile.TutorialDismissed == true,
 		TotalGuestsServed = profile.TotalGuestsServed or 0,
@@ -410,7 +490,6 @@ function DataService.SavePlayerProfile(player)
 			end
 		end
 	else
-		-- Save to MockDataStore
 		mockSessionStore[storeKey] = deepCopy(dataToSave)
 		saveSuccess = true
 	end
@@ -418,8 +497,6 @@ function DataService.SavePlayerProfile(player)
 	saveLocks[userId] = nil
 
 	if saveSuccess then
-		print(string.format("[DataService] Successfully saved profile for user %s (%d). Coins: %d, Ecto: %d",
-			player.Name, userId, profile.Coins, profile.Ectoplasm))
 		return true
 	else
 		warn(string.format("[DataService] CRITICAL: Failed to save profile for user %d: %s", userId, tostring(errMessage)))
@@ -427,7 +504,7 @@ function DataService.SavePlayerProfile(player)
 	end
 end
 
--- Claim Offline Rewards (Atomic Server Validation)
+-- Claim Offline Rewards
 function DataService.ClaimOfflineRewards(player)
 	local userId = player.UserId
 	local profile = activeProfiles[userId]
@@ -444,12 +521,10 @@ function DataService.ClaimOfflineRewards(player)
 	local claimedCoins = pending.Coins or 0
 	local claimedEcto = pending.Ectoplasm or 0
 
-	-- Atomically award currencies
 	profile.Coins = profile.Coins + claimedCoins
 	profile.Ectoplasm = profile.Ectoplasm + claimedEcto
 	profile.PendingOfflineRewards = nil
 
-	-- Sync state to client
 	if EconomyService then
 		EconomyService.SyncPlayerState(player)
 	end
@@ -480,7 +555,6 @@ end
 
 -- Autosave all connected players
 function DataService.AutosaveAll()
-	print("[DataService] Running periodic autosave...")
 	for _, player in ipairs(Players:GetPlayers()) do
 		task.spawn(function()
 			DataService.SavePlayerProfile(player)
@@ -491,7 +565,6 @@ end
 -- Unload player on leave
 function DataService.UnloadPlayer(player)
 	local userId = player.UserId
-	-- Save first
 	DataService.SavePlayerProfile(player)
 	activeProfiles[userId] = nil
 	saveLocks[userId] = nil
@@ -506,7 +579,6 @@ function DataService.BindToClose()
 	local savesRemaining = #playersToSave
 
 	if savesRemaining == 0 then
-		print("[DataService] No active players to flush on shutdown.")
 		return
 	end
 
@@ -522,10 +594,8 @@ function DataService.BindToClose()
 		end)
 	end
 
-	-- Wait for saves to finish with timeout
 	task.delay(10, function()
 		if savesRemaining > 0 then
-			warn(string.format("[DataService] BindToClose timed out with %d saves pending.", savesRemaining))
 			task.spawn(bindToCloseThread)
 		end
 	end)
@@ -534,7 +604,6 @@ function DataService.BindToClose()
 	print("[DataService] Shutdown flush complete.")
 end
 
--- Expose internal session store for inspection and testing
 function DataService.GetMockStore()
 	return mockSessionStore
 end

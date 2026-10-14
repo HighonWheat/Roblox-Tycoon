@@ -10,25 +10,29 @@ local GuestService = require(ServerScriptService.Services.GuestService)
 local ParanormalService = require(ServerScriptService.Services.ParanormalService)
 local StaffService = require(ServerScriptService.Services.StaffService)
 local DataService = require(ServerScriptService.Services.DataService)
+local MonetizationService = require(ServerScriptService.Services.MonetizationService)
 
 local Network = RepStorage.Network
-local RequestUpgrade = Network.RequestUpgrade
-local InvestigateClue = Network.InvestigateClue
-local StartCapture = Network.StartCapture
-local SubmitCaptureAttempt = Network.SubmitCaptureAttempt
-local AssignStaff = Network.AssignStaff
-local UnassignStaff = Network.UnassignStaff
-local LevelUpGhost = Network.LevelUpGhost
-local ClaimOfflineRewards = Network.ClaimOfflineRewards
-local OfflineRewardReady = Network.OfflineRewardReady
-local DismissTutorial = Network.DismissTutorial
+local RequestUpgrade = Network:WaitForChild("RequestUpgrade")
+local InvestigateClue = Network:WaitForChild("InvestigateClue")
+local StartCapture = Network:WaitForChild("StartCapture")
+local SubmitCaptureAttempt = Network:WaitForChild("SubmitCaptureAttempt")
+local AssignStaff = Network:WaitForChild("AssignStaff")
+local UnassignStaff = Network:WaitForChild("UnassignStaff")
+local LevelUpGhost = Network:WaitForChild("LevelUpGhost")
+local ClaimOfflineRewards = Network:WaitForChild("ClaimOfflineRewards")
+local OfflineRewardReady = Network:WaitForChild("OfflineRewardReady")
+local DismissTutorial = Network:WaitForChild("DismissTutorial")
+local UnlockFloor = Network:WaitForChild("UnlockFloor")
+local ClaimDailyReward = Network:WaitForChild("ClaimDailyReward")
+local RequestPrestige = Network:WaitForChild("RequestPrestige")
 
 -- Handle Upgrade Request (from HUD or Pad)
 local function handleUpgradeRequest(player, roomId)
 	if typeof(roomId) ~= "string" then
 		return false, "Invalid room ID", 0, 0
 	end
-	if roomId ~= "Room1" and roomId ~= "Room2" then
+	if not GameConfig.Rooms[roomId] then
 		return false, "Unknown room: " .. tostring(roomId), 0, 0
 	end
 
@@ -42,12 +46,13 @@ local function handleUpgradeRequest(player, roomId)
 		return false, "You do not own a hotel plot", 0, 0
 	end
 
-	local currentLevel = profile.RoomLevels[roomId] or 1
 	local roomConfig = GameConfig.Rooms[roomId]
-	if not roomConfig then
-		return false, "Room configuration not found", profile.Coins, currentLevel
+	local floorIdx = roomConfig.Floor or 1
+	if floorIdx == 2 and (not profile.FloorsUnlocked or not profile.FloorsUnlocked[2]) then
+		return false, "Unlock Floor 2 first before upgrading this room!", profile.Coins, 1
 	end
 
+	local currentLevel = profile.RoomLevels[roomId] or 1
 	local nextUpgrade = roomConfig.Upgrades[currentLevel + 1]
 	if not nextUpgrade then
 		return false, "Room is already fully upgraded!", profile.Coins, currentLevel
@@ -67,7 +72,6 @@ local function handleUpgradeRequest(player, roomId)
 		profile.RoomLevels[roomId] = newLevel
 		HotelService.ApplyRoomUpgradeVisuals(plot, roomId, newLevel)
 
-		-- Tutorial advancement: Upgrading Room 1 to Lv 2 completes Step 2
 		if roomId == "Room1" and newLevel >= 2 and profile.TutorialStep == 2 then
 			EconomyService.SetTutorialStep(player, 3)
 		end
@@ -83,6 +87,48 @@ local function handleUpgradeRequest(player, roomId)
 	end
 
 	return status, msg, bal, lv
+end
+
+-- Handle Floor Unlock Request
+local function handleUnlockFloorRequest(player, floorIndex)
+	local plot = HotelService.GetPlayerPlot(player)
+	if not plot then
+		return false, "You do not own a hotel plot"
+	end
+
+	local success, msg = EconomyService.UnlockFloor(player, floorIndex)
+	if success then
+		HotelService.UnlockPlotFloor(plot, floorIndex)
+		print(string.format("[Ghostshift] %s unlocked Floor %d!", player.Name, floorIndex))
+	end
+	return success, msg
+end
+
+-- Handle Prestige / Grand Renovation Request
+local function handlePrestigeRequest(player)
+	local plot = HotelService.GetPlayerPlot(player)
+	if not plot then
+		return false, "You do not own a hotel plot"
+	end
+
+	local success, msg = EconomyService.RequestPrestige(player)
+	if success then
+		-- Reset room visuals on plot
+		for _, rId in ipairs({"Room1", "Room2", "Room3", "Room4"}) do
+			HotelService.ResetRoomVisuals(plot, rId)
+			HotelService.UpdatePadDisplay(plot, rId, 1)
+		end
+		HotelService.LockPlotFloor(plot, 2)
+
+		-- Update plot sign with star badge
+		local sign = plot:FindFirstChild("Structure") and plot.Structure:FindFirstChild("SignBoard")
+		if sign and sign:FindFirstChild("SignGui") and sign.SignGui:FindFirstChild("OwnerLabel") then
+			local prof = EconomyService.GetProfile(player)
+			local stars = prof and prof.ReputationStars or 1
+			sign.SignGui.OwnerLabel.Text = string.format("%s %s - %s's Hotel", string.rep("★", stars), plot.Name, player.Name)
+		end
+	end
+	return success, msg
 end
 
 RequestUpgrade.OnServerInvoke = function(player, roomId)
@@ -121,10 +167,23 @@ DismissTutorial.OnServerInvoke = function(player)
 	return DataService.DismissTutorial(player)
 end
 
+UnlockFloor.OnServerInvoke = function(player, floorIndex)
+	return handleUnlockFloorRequest(player, floorIndex)
+end
+
+ClaimDailyReward.OnServerInvoke = function(player, questId)
+	return EconomyService.ClaimDailyReward(player, questId)
+end
+
+RequestPrestige.OnServerInvoke = function(player)
+	return handlePrestigeRequest(player)
+end
+
 -- Init Services
 DataService.Init(EconomyService)
-HotelService.Init(EconomyService, handleUpgradeRequest)
-GuestService.Init(EconomyService, HotelService)
+MonetizationService.Init(EconomyService)
+HotelService.Init(EconomyService, handleUpgradeRequest, handleUnlockFloorRequest)
+GuestService.Init(EconomyService, HotelService, MonetizationService)
 GuestService.Start()
 
 ParanormalService.Init(EconomyService, HotelService)
@@ -143,6 +202,12 @@ local function setupPlayer(player)
 		warn("[Ghostshift] No plots available for " .. player.Name)
 	else
 		print("[Ghostshift] Assigned plot:", plot.Name, "to", player.Name)
+
+		-- Restore Floor 2 if already unlocked in saved profile
+		if profile and profile.FloorsUnlocked and profile.FloorsUnlocked[2] == true then
+			HotelService.UnlockPlotFloor(plot, 2)
+		end
+
 		-- Restore room upgrade visuals for loaded profile
 		if profile and profile.RoomLevels then
 			for roomId, level in pairs(profile.RoomLevels) do
@@ -151,6 +216,7 @@ local function setupPlayer(player)
 				end
 			end
 		end
+
 		-- Restore visual staff models for assigned staff
 		if profile and profile.AssignedStaff then
 			for slotIndex, ghostId in pairs(profile.AssignedStaff) do
@@ -191,4 +257,4 @@ game:BindToClose(function()
 	DataService.BindToClose()
 end)
 
-print("[Ghostshift] ServerMain (Phase 4: Persistence, Capped Offline Earnings & Onboarding) initialized successfully.")
+print("[Ghostshift] ServerMain (Phase 5: Multi-Floor, Daily Quests, Guest Variety, Reputation & Monetization) initialized successfully.")

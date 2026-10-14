@@ -1,18 +1,28 @@
+-- ServerScriptService/Services/ParanormalService.luau
 local RepStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
+local SSS = game:GetService("ServerScriptService")
 
 local GameConfig = require(RepStorage.Configs.GameConfig)
+local GhostConfig = require(RepStorage.Configs.GhostConfig)
+local Network = RepStorage.Network
+local ParanormalEventUpdated = Network.ParanormalEventUpdated
+
+local ParanormalService = {}
+local isRunning = false
+local activeEvents = {} -- [plot] = eventData
+
+ParanormalService.EconomyService = require(SSS.Services.EconomyService)
+ParanormalService.HotelService = require(SSS.Services.HotelService)
+
 local function getParaConfig()
 	return GameConfig.Paranormal or {
 		CheckInterval = 12,
-		InitialEventDelay = 8,
 		CooldownDuration = 25,
 		EventTimeout = 90,
 		ClueCount = 2,
 		MaxCaptureAttempts = 2,
-		AttemptCooldown = 1.0,
 		TargetZone = { Min = 0.35, Max = 0.65 },
 		BaseEctoplasmReward = 35,
 		ClueInvestigationEctoplasm = 5,
@@ -20,32 +30,16 @@ local function getParaConfig()
 		ConsolationCoins = 50,
 	}
 end
-local GhostConfig = require(RepStorage.Configs.GhostConfig)
-local Network = RepStorage.Network
-
-local ParanormalEventUpdated = Network.ParanormalEventUpdated
 
 local function safeFireClient(player, data)
-	if typeof(player) == "Instance" and player:IsA("Player") then
+	if typeof(player) == "Instance" and player:IsA("Player") and player.Parent then
 		ParanormalEventUpdated:FireClient(player, data)
 	end
 end
 
-local ServerScriptService = game:GetService("ServerScriptService")
-local Services = ServerScriptService:WaitForChild("Services")
-local DefaultEconomyService = require(Services:WaitForChild("EconomyService"))
-local DefaultHotelService = require(Services:WaitForChild("HotelService"))
-
-local ParanormalService = {}
-ParanormalService.EconomyService = DefaultEconomyService
-ParanormalService.HotelService = DefaultHotelService
-_G.GhostshiftActiveEvents = _G.GhostshiftActiveEvents or {}
-local activeEvents = _G.GhostshiftActiveEvents -- [plot] = EventStateTable
-local isRunning = false
-
 function ParanormalService.Init(economyService, hotelService)
-	ParanormalService.EconomyService = economyService or DefaultEconomyService
-	ParanormalService.HotelService = hotelService or DefaultHotelService
+	ParanormalService.EconomyService = economyService or ParanormalService.EconomyService
+	ParanormalService.HotelService = hotelService or ParanormalService.HotelService
 end
 
 function ParanormalService.Start()
@@ -53,9 +47,9 @@ function ParanormalService.Start()
 	isRunning = true
 
 	task.spawn(function()
-		task.wait(getParaConfig().InitialEventDelay or 8)
+		task.wait(getParaConfig().InitialEventDelay or 10)
 		while isRunning do
-			task.wait(getParaConfig().CheckInterval)
+			task.wait(getParaConfig().CheckInterval or 12)
 			ParanormalService.CheckAllPlotsForEvents()
 		end
 	end)
@@ -80,12 +74,16 @@ function ParanormalService.CheckAllPlotsForEvents()
 			local now = os.time()
 
 			if not event or event.State == "Inactive" or (event.State == "Cooldown" and now >= (event.CooldownUntil or 0)) then
-				-- Check room availability for haunting
-				local roomIds = {"Room1", "Room2"}
-				local chosenRoomId = roomIds[math.random(1, #roomIds)]
-				ParanormalService.TriggerEvent(plot, chosenRoomId)
+				-- Roll available event types based on plot expansion
+				local isF2Unlocked = ParanormalService.HotelService.IsFloorUnlocked(plot, 2)
+				local eventPool = { "HauntedRoom", "LivingLuggage" }
+				if isF2Unlocked then
+					table.insert(eventPool, "MirrorVisitor")
+				end
+
+				local chosenType = eventPool[math.random(1, #eventPool)]
+				ParanormalService.TriggerEvent(plot, chosenType)
 			elseif event and (event.State == "CluesAvailable" or event.State == "CaptureAvailable") then
-				-- Check timeout
 				if now - event.StartTime >= getParaConfig().EventTimeout then
 					ParanormalService.FailEvent(plot, "Event timed out")
 				end
@@ -94,17 +92,15 @@ function ParanormalService.CheckAllPlotsForEvents()
 	end
 end
 
-function ParanormalService.TriggerEvent(plot, roomId)
+function ParanormalService.TriggerEvent(plot, eventType)
 	if not plot or typeof(plot) ~= "Instance" then return nil end
-	local room = plot:FindFirstChild(roomId)
-	if not room then return end
 
 	local ownerUserId = plot:GetAttribute("OwnerUserId")
 	local player = Players:GetPlayerByUserId(ownerUserId)
 
 	local eventData = {
 		Plot = plot,
-		RoomId = roomId,
+		EventType = eventType or "HauntedRoom",
 		State = "Starting",
 		StartTime = os.time(),
 		CooldownUntil = 0,
@@ -118,12 +114,38 @@ function ParanormalService.TriggerEvent(plot, roomId)
 	}
 	activeEvents[plot] = eventData
 
-	-- 1. Visible Supernatural Disturbance
-	-- Room Light Flicker & Teal Tint
+	if eventType == "LivingLuggage" then
+		ParanormalService.SetupLivingLuggageEvent(plot, eventData)
+	elseif eventType == "MirrorVisitor" then
+		ParanormalService.SetupMirrorVisitorEvent(plot, eventData)
+	else
+		ParanormalService.SetupHauntedRoomEvent(plot, eventData)
+	end
+
+	eventData.State = "CluesAvailable"
+	return eventData
+end
+
+-- EVENT 1: Standard Haunted Room
+function ParanormalService.SetupHauntedRoomEvent(plot, eventData)
+	local isF2Unlocked = ParanormalService.HotelService.IsFloorUnlocked(plot, 2)
+	local eligibleRooms = { "Room1", "Room2" }
+	if isF2Unlocked then
+		table.insert(eligibleRooms, "Room3")
+		table.insert(eligibleRooms, "Room4")
+	end
+
+	local roomId = eligibleRooms[math.random(1, #eligibleRooms)]
+	local room = plot:FindFirstChild(roomId)
+	if not room then return end
+
+	eventData.RoomId = roomId
+
+	-- 1. Flickering Lights & Mist
 	local roomLightPart = room:FindFirstChild("RoomLight")
 	local pointLight = roomLightPart and roomLightPart:FindFirstChild("PointLight")
-	local originalColor = pointLight and pointLight.Color or Color3.fromRGB(255, 200, 140)
-	local originalBrightness = pointLight and pointLight.Brightness or 1.8
+	local origColor = pointLight and pointLight.Color or Color3.fromRGB(255, 200, 140)
+	local origBright = pointLight and pointLight.Brightness or 1.8
 
 	if pointLight then
 		pointLight.Color = Color3.fromRGB(80, 240, 220)
@@ -133,82 +155,42 @@ function ParanormalService.TriggerEvent(plot, roomId)
 				task.wait(0.12)
 			end
 			if pointLight and pointLight.Parent then
-				pointLight.Color = originalColor
-				pointLight.Brightness = originalBrightness
+				pointLight.Color = origColor
+				pointLight.Brightness = origBright
 			end
 		end)
 	end
 
-	-- Eerie Mist on Floor
-	local mistEmitterPart = Instance.new("Part")
-	mistEmitterPart.Name = "SpectralMistNode"
-	mistEmitterPart.Size = Vector3.new(14, 0.2, 14)
-	mistEmitterPart.CFrame = room.UpgradePad.CFrame * CFrame.new(0, 0.2, -6)
-	mistEmitterPart.Transparency = 1
-	mistEmitterPart.Anchored = true
-	mistEmitterPart.CanCollide = false
-	mistEmitterPart.Parent = room
+	local bedPos = room:FindFirstChild("GuestRestSpot") and room.GuestRestSpot.CFrame or room:GetPivot()
 
-	local mist = Instance.new("ParticleEmitter")
-	mist.Name = "MistParticles"
-	mist.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 240, 220)),
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(150, 80, 255)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(50, 180, 200)),
-	})
-	mist.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.9),
-		NumberSequenceKeypoint.new(0.5, 0.4),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	mist.Rate = 18
-	mist.Speed = NumberRange.new(0.5, 1.5)
-	mist.Lifetime = NumberRange.new(2, 3.5)
-	mist.Size = NumberSequence.new(2.5, 4.5)
-	mist.Parent = mistEmitterPart
-	table.insert(eventData.DisturbanceParts, mistEmitterPart)
-
-	-- 2. Spawn Two Discoverable Clues
-	-- Clue 1: Flickering Lamp / Ectoplasmic Residue (near Nightstand/Bed)
-	local bedPos = room.GuestRestSpot.CFrame
+	-- Clue 1: Ectoplasmic Residue
 	local clue1Part = Instance.new("Part")
 	clue1Part.Name = "Clue_1"
 	clue1Part.Shape = Enum.PartType.Ball
 	clue1Part.Size = Vector3.new(1.4, 1.4, 1.4)
-	clue1Part.CFrame = bedPos * CFrame.new(4.5, 2.8, -3)
+	clue1Part.CFrame = bedPos * CFrame.new(4, 2.5, -2)
 	clue1Part.Color = Color3.fromRGB(80, 255, 220)
 	clue1Part.Material = Enum.Material.Neon
 	clue1Part.Anchored = true
 	clue1Part.CanCollide = false
 	clue1Part.Parent = room
 
-	local clue1Light = Instance.new("PointLight")
-	clue1Light.Color = Color3.fromRGB(90, 255, 220)
-	clue1Light.Range = 8
-	clue1Light.Brightness = 2
-	clue1Light.Parent = clue1Part
+	local p1 = Instance.new("ProximityPrompt")
+	p1.Name = "CluePrompt"
+	p1.ObjectText = "Ectoplasmic Residue"
+	p1.ActionText = "Investigate Residue"
+	p1.HoldDuration = 0.4
+	p1.MaxActivationDistance = 9
+	p1.Parent = clue1Part
 
-	local prompt1 = Instance.new("ProximityPrompt")
-	prompt1.Name = "CluePrompt"
-	prompt1.ObjectText = "Ectoplasmic Residue"
-	prompt1.ActionText = "Investigate Residue"
-	prompt1.HoldDuration = 0.4
-	prompt1.MaxActivationDistance = 9
-	prompt1.Parent = clue1Part
-
-	eventData.Clues["Clue_1"] = {
-		Part = clue1Part,
-		Claimed = false,
-		Prompt = prompt1,
-		Name = "Ectoplasmic Residue",
-	}
+	eventData.Clues["Clue_1"] = { Part = clue1Part, Claimed = false, Prompt = p1, Name = "Ectoplasmic Residue" }
 	table.insert(eventData.ClueInstances, clue1Part)
 
-	-- Clue 2: Glowing Spectral Footprints (near room entrance)
+	-- Clue 2: Spectral Footprints
 	local clue2Part = Instance.new("Part")
 	clue2Part.Name = "Clue_2"
 	clue2Part.Size = Vector3.new(3.5, 0.2, 3.5)
-	clue2Part.CFrame = room.UpgradePad.CFrame * CFrame.new(0, 0.15, -4)
+	clue2Part.CFrame = bedPos * CFrame.new(-3, 0.1, 4)
 	clue2Part.Color = Color3.fromRGB(150, 100, 255)
 	clue2Part.Material = Enum.Material.Neon
 	clue2Part.Transparency = 0.3
@@ -216,121 +198,241 @@ function ParanormalService.TriggerEvent(plot, roomId)
 	clue2Part.CanCollide = false
 	clue2Part.Parent = room
 
-	local clue2Light = Instance.new("PointLight")
-	clue2Light.Color = Color3.fromRGB(170, 110, 255)
-	clue2Light.Range = 7
-	clue2Light.Brightness = 1.5
-	clue2Light.Parent = clue2Part
+	local p2 = Instance.new("ProximityPrompt")
+	p2.Name = "CluePrompt"
+	p2.ObjectText = "Spectral Footprints"
+	p2.ActionText = "Inspect Footprints"
+	p2.HoldDuration = 0.4
+	p2.MaxActivationDistance = 9
+	p2.Parent = clue2Part
 
-	local prompt2 = Instance.new("ProximityPrompt")
-	prompt2.Name = "CluePrompt"
-	prompt2.ObjectText = "Spectral Footprints"
-	prompt2.ActionText = "Scan Footprints"
-	prompt2.HoldDuration = 0.4
-	prompt2.MaxActivationDistance = 9
-	prompt2.Parent = clue2Part
-
-	eventData.Clues["Clue_2"] = {
-		Part = clue2Part,
-		Claimed = false,
-		Prompt = prompt2,
-		Name = "Spectral Footprints",
-	}
+	eventData.Clues["Clue_2"] = { Part = clue2Part, Claimed = false, Prompt = p2, Name = "Spectral Footprints" }
 	table.insert(eventData.ClueInstances, clue2Part)
 
-	-- Hook server-side prompt triggers
-	for clueId, clueObj in pairs(eventData.Clues) do
-		clueObj.Prompt.Triggered:Connect(function(triggerPlayer)
-			ParanormalService.InvestigateClue(triggerPlayer, clueId)
-		end)
-	end
-
-	eventData.State = "CluesAvailable"
-
-	-- Notify Owner
-	if player and player.Parent then
-		safeFireClient(player, {
-			Event = "HauntingStarted",
-			RoomId = roomId,
-			RoomName = GameConfig.Rooms[roomId].Name,
-			TotalClues = 2,
-		})
-		ParanormalService.EconomyService.SetTutorialStep(player, 3)
-	end
-
-	return eventData
+	local roomConfig = GameConfig.Rooms[roomId]
+	safeFireClient(eventData.Player, {
+		Event = "HauntingStarted",
+		EventType = "HauntedRoom",
+		RoomId = roomId,
+		RoomName = roomConfig and roomConfig.Name or roomId,
+		TimeoutSeconds = getParaConfig().EventTimeout,
+	})
 end
 
+-- EVENT 2: Living Luggage (Moving possessed steamer trunk)
+function ParanormalService.SetupLivingLuggageEvent(plot, eventData)
+	local lobby = plot:FindFirstChild("Lobby")
+	local rootCF = lobby and lobby:GetPivot() or plot:GetPivot()
+	eventData.RoomId = "Lobby"
+
+	-- Spawn possessed steamer trunk
+	local trunk = Instance.new("Part")
+	trunk.Name = "LivingTrunk"
+	trunk.Size = Vector3.new(3.6, 2.4, 2.4)
+	trunk.CFrame = rootCF * CFrame.new(-7, 1.2, 8)
+	trunk.Color = Color3.fromRGB(65, 35, 20)
+	trunk.Material = Enum.Material.WoodPlanks
+	trunk.Anchored = true
+	trunk.CanCollide = true
+	trunk.Parent = plot
+	table.insert(eventData.DisturbanceParts, trunk)
+
+	-- Green glowing supernatural aura particles
+	local sparks = Instance.new("ParticleEmitter")
+	sparks.Name = "EctoSparks"
+	sparks.Color = ColorSequence.new(Color3.fromRGB(90, 255, 140))
+	sparks.Size = NumberSequence.new(0.3, 0.7)
+	sparks.Rate = 18
+	sparks.Speed = NumberRange.new(1.5, 3.5)
+	sparks.Lifetime = NumberRange.new(1, 2)
+	sparks.Parent = trunk
+
+	-- Trunk gentle rattle animation loop
+	local rattleRunning = true
+	local origTrunkCF = trunk.CFrame
+	task.spawn(function()
+		local t = 0
+		while rattleRunning and trunk and trunk.Parent do
+			t = t + 0.15
+			local offset = Vector3.new(math.sin(t * 12) * 0.1, math.abs(math.sin(t * 8)) * 0.15, 0)
+			trunk.CFrame = origTrunkCF + offset
+			task.wait(0.05)
+		end
+	end)
+	table.insert(eventData.DisturbanceParts, { Stop = function() rattleRunning = false end })
+
+	-- Clue 1: Rattling Brass Latch
+	local latch = Instance.new("Part")
+	latch.Name = "Clue_1"
+	latch.Size = Vector3.new(0.8, 0.8, 0.4)
+	latch.CFrame = trunk.CFrame * CFrame.new(0, 0.4, 1.3)
+	latch.Color = Color3.fromRGB(240, 210, 80)
+	latch.Material = Enum.Material.Metal
+	latch.Anchored = true
+	latch.CanCollide = false
+	latch.Parent = plot
+
+	local p1 = Instance.new("ProximityPrompt")
+	p1.Name = "CluePrompt"
+	p1.ObjectText = "Possessed Steamer Trunk"
+	p1.ActionText = "Soothe Rattling Latch"
+	p1.HoldDuration = 0.4
+	p1.MaxActivationDistance = 9
+	p1.Parent = latch
+
+	eventData.Clues["Clue_1"] = { Part = latch, Claimed = false, Prompt = p1, Name = "Rattling Brass Latch" }
+	table.insert(eventData.ClueInstances, latch)
+
+	-- Clue 2: Ghostly Luggage Tag
+	local tag = Instance.new("Part")
+	tag.Name = "Clue_2"
+	tag.Size = Vector3.new(0.7, 0.9, 0.1)
+	tag.CFrame = trunk.CFrame * CFrame.new(1.4, 0.2, 1.3) * CFrame.Angles(0, 0, math.rad(-15))
+	tag.Color = Color3.fromRGB(180, 240, 220)
+	tag.Material = Enum.Material.Neon
+	tag.Anchored = true
+	tag.CanCollide = false
+	tag.Parent = plot
+
+	local p2 = Instance.new("ProximityPrompt")
+	p2.Name = "CluePrompt"
+	p2.ObjectText = "Antique Luggage Tag"
+	p2.ActionText = "Read Spirit Name: Property of Mildred"
+	p2.HoldDuration = 0.4
+	p2.MaxActivationDistance = 9
+	p2.Parent = tag
+
+	eventData.Clues["Clue_2"] = { Part = tag, Claimed = false, Prompt = p2, Name = "Ghostly Luggage Tag" }
+	table.insert(eventData.ClueInstances, tag)
+
+	safeFireClient(eventData.Player, {
+		Event = "HauntingStarted",
+		EventType = "LivingLuggage",
+		RoomId = "Lobby",
+		RoomName = "Hotel Lobby (Living Luggage)",
+		TimeoutSeconds = getParaConfig().EventTimeout,
+	})
+end
+
+-- EVENT 3: Mirror Visitor
+function ParanormalService.SetupMirrorVisitorEvent(plot, eventData)
+	local room4 = plot:FindFirstChild("Room4")
+	local targetRoom = room4 or plot:FindFirstChild("Room2")
+	local roomName = room4 and "Room 4 (Phantom Ballroom)" or "Room 2 (Phantom Parlor)"
+	eventData.RoomId = targetRoom.Name
+
+	local mirrorPos = targetRoom and targetRoom:GetPivot() or plot:GetPivot()
+
+	-- Eerie frost aura on the wall mirror
+	local frostPart = Instance.new("Part")
+	frostPart.Name = "MirrorFrost"
+	frostPart.Size = Vector3.new(7, 6, 0.2)
+	frostPart.CFrame = mirrorPos * CFrame.new(0, 4.5, -7)
+	frostPart.Color = Color3.fromRGB(140, 220, 255)
+	frostPart.Material = Enum.Material.Ice
+	frostPart.Transparency = 0.4
+	frostPart.Anchored = true
+	frostPart.CanCollide = false
+	frostPart.Parent = plot
+	table.insert(eventData.DisturbanceParts, frostPart)
+
+	-- Clue 1: Ectoplasmic Handprint
+	local handprint = Instance.new("Part")
+	handprint.Name = "Clue_1"
+	handprint.Shape = Enum.PartType.Ball
+	handprint.Size = Vector3.new(1.2, 1.2, 0.3)
+	handprint.CFrame = frostPart.CFrame * CFrame.new(-1.2, 0.5, 0.2)
+	handprint.Color = Color3.fromRGB(110, 255, 230)
+	handprint.Material = Enum.Material.Neon
+	handprint.Anchored = true
+	handprint.CanCollide = false
+	handprint.Parent = plot
+
+	local p1 = Instance.new("ProximityPrompt")
+	p1.Name = "CluePrompt"
+	p1.ObjectText = "Haunted Mirror"
+	p1.ActionText = "Examine Spectral Handprint"
+	p1.HoldDuration = 0.4
+	p1.MaxActivationDistance = 9
+	p1.Parent = handprint
+
+	eventData.Clues["Clue_1"] = { Part = handprint, Claimed = false, Prompt = p1, Name = "Ectoplasmic Handprint" }
+	table.insert(eventData.ClueInstances, handprint)
+
+	-- Clue 2: Mystic Candle Reflection
+	local candle = Instance.new("Part")
+	candle.Name = "Clue_2"
+	candle.Size = Vector3.new(0.8, 1.8, 0.8)
+	candle.CFrame = frostPart.CFrame * CFrame.new(1.8, -1.2, 1.2)
+	candle.Color = Color3.fromRGB(240, 160, 255)
+	candle.Material = Enum.Material.Neon
+	candle.Anchored = true
+	candle.CanCollide = false
+	candle.Parent = plot
+
+	local p2 = Instance.new("ProximityPrompt")
+	p2.Name = "CluePrompt"
+	p2.ObjectText = "Mystic Reflection"
+	p2.ActionText = "Align Reflection Angle"
+	p2.HoldDuration = 0.4
+	p2.MaxActivationDistance = 9
+	p2.Parent = candle
+
+	eventData.Clues["Clue_2"] = { Part = candle, Claimed = false, Prompt = p2, Name = "Mystic Reflection" }
+	table.insert(eventData.ClueInstances, candle)
+
+	safeFireClient(eventData.Player, {
+		Event = "HauntingStarted",
+		EventType = "MirrorVisitor",
+		RoomId = targetRoom.Name,
+		RoomName = roomName .. " (Mirror Visitor)",
+		TimeoutSeconds = getParaConfig().EventTimeout,
+	})
+end
+
+-- Unified Clue Investigation
 function ParanormalService.InvestigateClue(player, clueId)
 	local plot = ParanormalService.HotelService.GetPlayerPlot(player)
-	if not plot then
-		return false, "You do not own this hotel plot"
-	end
+	if not plot then return false, "No hotel plot" end
 
 	local event = activeEvents[plot]
 	if not event or event.State ~= "CluesAvailable" then
-		return false, "No active clue investigation in progress"
+		return false, "No active investigation"
 	end
 
 	local clue = event.Clues[clueId]
-	if not clue then
-		return false, "Unknown clue identifier"
-	end
+	if not clue then return false, "Unknown clue" end
+	if clue.Claimed then return false, "Clue already investigated" end
 
-	if clue.Claimed then
-		return false, "Clue has already been examined"
-	end
-
-	-- Distance validation
-	local character = player.Character
-	local root = nil
-	if typeof(character) == "Instance" then
-		root = character:FindFirstChild("HumanoidRootPart")
-	elseif typeof(character) == "table" then
-		root = character.HumanoidRootPart
-	end
-	if not root or (root.Position - clue.Part.Position).Magnitude > 14 then
-		return false, "You are too far from the clue"
-	end
-
-	-- Mark claimed
 	clue.Claimed = true
-	clue.Prompt.Enabled = false
-	clue.Part.Color = Color3.fromRGB(255, 225, 90) -- turns golden
-	if clue.Part:FindFirstChild("PointLight") then
-		clue.Part.PointLight.Color = Color3.fromRGB(255, 230, 110)
-	end
+	if clue.Prompt then clue.Prompt.Enabled = false end
+	if clue.Part then clue.Part.Transparency = 0.85 end
 
-	-- Reward clue investigation bonus
 	local clueEcto = getParaConfig().ClueInvestigationEctoplasm or 5
-	ParanormalService.EconomyService.AddEctoplasm(player, clueEcto, "ClueInvestigated")
+	ParanormalService.EconomyService.AddEctoplasm(player, clueEcto, "ClueInvestigation_" .. clueId)
 
-	-- Count total claimed
 	local claimedCount = 0
 	for _, c in pairs(event.Clues) do
-		if c.Claimed then
-			claimedCount = claimedCount + 1
-		end
+		if c.Claimed then claimedCount = claimedCount + 1 end
 	end
 
 	if claimedCount < getParaConfig().ClueCount then
 		safeFireClient(player, {
 			Event = "ClueFound",
-			ClueId = clueId,
+			RoomId = event.RoomId,
 			ClaimedCount = claimedCount,
 			TotalClues = getParaConfig().ClueCount,
 			BonusEctoplasm = clueEcto,
 		})
 		return true, string.format("Found %s! (%d/%d clues)", clue.Name, claimedCount, getParaConfig().ClueCount), claimedCount
 	else
-		-- All clues found -> Manifest Ghost!
 		event.State = "CaptureAvailable"
-		ParanormalService.ManifestGhost(plot, event.RoomId)
+		ParanormalService.ManifestGhost(plot, event.RoomId, event.EventType)
 
 		safeFireClient(player, {
 			Event = "CaptureReady",
 			RoomId = event.RoomId,
-			GhostName = GhostConfig.Ghosts.Bellhop.Name,
+			GhostName = (event.EventType == "LivingLuggage" and "Mildred the Maid") or (event.EventType == "MirrorVisitor" and "Grimm the Poltergeist") or "Jasper the Bellhop",
 			ClaimedCount = claimedCount,
 			TotalClues = getParaConfig().ClueCount,
 		})
@@ -340,392 +442,225 @@ function ParanormalService.InvestigateClue(player, clueId)
 	end
 end
 
-function ParanormalService.ManifestGhost(plot, roomId)
-	local room = plot:FindFirstChild(roomId)
-	local restSpot = room and room:FindFirstChild("GuestRestSpot")
-	if not restSpot then return end
+function ParanormalService.ManifestGhost(plot, roomId, eventType)
+	local room = plot:FindFirstChild(roomId) or plot:FindFirstChild("Lobby")
+	local restSpot = room and room:FindFirstChild("GuestRestSpot") or room:FindFirstChild("GuestCheckInSpot") or plot:GetPivot()
+	local centerCF = (typeof(restSpot) == "Instance" and restSpot:GetPivot() or restSpot) + Vector3.new(0, 3.2, 0)
 
 	local ghost = Instance.new("Model")
-	ghost.Name = "ParanormalEntity_Jasper"
+	ghost.Name = "ParanormalEntity_Active"
 
-	local centerCF = restSpot.CFrame + Vector3.new(0, 3.2, 0)
+	local ghostColor = (eventType == "MirrorVisitor" and Color3.fromRGB(180, 80, 255)) or (eventType == "LivingLuggage" and Color3.fromRGB(200, 160, 255)) or Color3.fromRGB(110, 240, 215)
 
-	-- Torso
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Cylinder
 	body.Size = Vector3.new(3.6, 2.2, 2.2)
 	body.CFrame = centerCF * CFrame.Angles(0, 0, math.rad(90))
-	body.Color = Color3.fromRGB(110, 240, 215)
+	body.Color = ghostColor
 	body.Material = Enum.Material.Neon
 	body.Transparency = 0.35
 	body.Anchored = true
 	body.CanCollide = false
 	body.Parent = ghost
 
-	-- Head
 	local head = Instance.new("Part")
 	head.Name = "Head"
 	head.Shape = Enum.PartType.Ball
 	head.Size = Vector3.new(2.2, 2.2, 2.2)
 	head.CFrame = centerCF * CFrame.new(0, 2.1, 0)
-	head.Color = Color3.fromRGB(130, 255, 230)
+	head.Color = ghostColor
 	head.Material = Enum.Material.Neon
 	head.Transparency = 0.3
 	head.Anchored = true
 	head.CanCollide = false
 	head.Parent = ghost
 
-	-- Eyes
-	local leftEye = Instance.new("Part")
-	leftEye.Size = Vector3.new(0.4, 0.4, 0.4)
-	leftEye.Shape = Enum.PartType.Ball
-	leftEye.Color = Color3.fromRGB(30, 20, 50)
-	leftEye.CFrame = centerCF * CFrame.new(-0.4, 2.3, -0.95)
-	leftEye.Anchored = true
-	leftEye.CanCollide = false
-	leftEye.Parent = ghost
-
-	local rightEye = Instance.new("Part")
-	rightEye.Size = Vector3.new(0.4, 0.4, 0.4)
-	rightEye.Shape = Enum.PartType.Ball
-	rightEye.Color = Color3.fromRGB(30, 20, 50)
-	rightEye.CFrame = centerCF * CFrame.new(0.4, 2.3, -0.95)
-	rightEye.Anchored = true
-	rightEye.CanCollide = false
-	rightEye.Parent = ghost
-
-	-- Bellhop Pillbox Cap (Recognizable signature)
-	local cap = Instance.new("Part")
-	cap.Name = "BellhopCap"
-	cap.Shape = Enum.PartType.Cylinder
-	cap.Size = Vector3.new(0.8, 1.6, 1.6)
-	cap.CFrame = centerCF * CFrame.new(0, 3.4, 0) * CFrame.Angles(0, 0, math.rad(90))
-	cap.Color = Color3.fromRGB(160, 25, 45) -- Crimson vintage red
-	cap.Material = Enum.Material.Fabric
-	cap.Anchored = true
-	cap.CanCollide = false
-	cap.Parent = ghost
-
-	-- Gold band trim
-	local goldBand = Instance.new("Part")
-	goldBand.Name = "GoldBand"
-	goldBand.Shape = Enum.PartType.Cylinder
-	goldBand.Size = Vector3.new(0.2, 1.65, 1.65)
-	goldBand.CFrame = centerCF * CFrame.new(0, 3.1, 0) * CFrame.Angles(0, 0, math.rad(90))
-	goldBand.Color = Color3.fromRGB(255, 215, 0)
-	goldBand.Material = Enum.Material.Metal
-	goldBand.Anchored = true
-	goldBand.CanCollide = false
-	goldBand.Parent = ghost
-
-	-- Floating BillboardGui
 	local bb = Instance.new("BillboardGui")
-	bb.Name = "EntityGui"
-	bb.Size = UDim2.new(0, 200, 0, 56)
-	bb.StudsOffset = Vector3.new(0, 4.8, 0)
+	bb.Name = "CaptureGui"
+	bb.Size = UDim2.new(0, 180, 0, 48)
+	bb.StudsOffset = Vector3.new(0, 3.6, 0)
 	bb.AlwaysOnTop = true
 	bb.Parent = head
 
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(1, 0, 1, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(24, 16, 36)
-	frame.BorderSizePixel = 0
-	frame.Parent = bb
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = frame
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(90, 230, 150)
-	stroke.Thickness = 2
-	stroke.Parent = frame
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "CapturePrompt"
+	prompt.ObjectText = "Manifested Spirit"
+	prompt.ActionText = "Initiate Containment"
+	prompt.HoldDuration = 0.5
+	prompt.MaxActivationDistance = 12
+	prompt.Parent = head
 
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0.5, 0)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBold
-	title.Text = "👻 Jasper the Bellhop"
-	title.TextSize = 13
-	title.TextColor3 = Color3.fromRGB(120, 255, 220)
-	title.Parent = frame
-
-	local sub = Instance.new("TextLabel")
-	sub.Position = UDim2.new(0, 0, 0.5, 0)
-	sub.Size = UDim2.new(1, 0, 0.5, 0)
-	sub.BackgroundTransparency = 1
-	sub.Font = Enum.Font.GothamMedium
-	sub.Text = "UNCOMMON SPIRIT • [E] TO CAPTURE"
-	sub.TextSize = 10
-	sub.TextColor3 = Color3.fromRGB(255, 230, 120)
-	sub.Parent = frame
-
-	-- Capture Proximity Prompt
-	local capturePrompt = Instance.new("ProximityPrompt")
-	capturePrompt.Name = "CapturePrompt"
-	capturePrompt.ActionText = "Initiate Containment"
-	capturePrompt.ObjectText = "Jasper the Bellhop"
-	capturePrompt.HoldDuration = 0.5
-	capturePrompt.MaxActivationDistance = 9
-	capturePrompt.Parent = head
+	ghost.PrimaryPart = head
+	ghost.Parent = plot
 
 	local event = activeEvents[plot]
 	if event then
 		event.GhostModel = ghost
-		event.CapturePrompt = capturePrompt
-
-		capturePrompt.Triggered:Connect(function(triggerPlayer)
-			local ownerId = plot:GetAttribute("OwnerUserId")
-			if triggerPlayer.UserId == ownerId then
+		prompt.Triggered:Connect(function(triggerPlayer)
+			if triggerPlayer == event.Player then
 				ParanormalService.StartCapture(triggerPlayer)
 			end
 		end)
 	end
-
-	ghost.PrimaryPart = head
-	ghost.Parent = room
-	return ghost
 end
 
 function ParanormalService.StartCapture(player)
 	local plot = ParanormalService.HotelService.GetPlayerPlot(player)
-	if not plot then
-		return false, "You do not own this hotel plot"
-	end
+	if not plot then return false, "No plot" end
 
 	local event = activeEvents[plot]
 	if not event or event.State ~= "CaptureAvailable" then
-		return false, "Ghost is not ready for capture"
+		return false, "Capture is not available right now"
 	end
 
-	local ghost = event.GhostModel
-	if not ghost or not ghost.PrimaryPart then
-		return false, "Ghost model is not manifested"
-	end
-
-	local character = player.Character
-	local root = nil
-	if typeof(character) == "Instance" then
-		root = character:FindFirstChild("HumanoidRootPart")
-	elseif typeof(character) == "table" then
-		root = character.HumanoidRootPart
-	end
-	if not root or (root.Position - ghost.PrimaryPart.Position).Magnitude > 14 then
-		return false, "You must be closer to initiate containment"
-	end
-
-	-- Create or reuse capture session
-	local sessionToken = tostring(math.random(100000, 999999)) .. "_" .. tostring(os.time())
-	event.CaptureSession = {
+	local sessionToken = "Cap_" .. player.UserId .. "_" .. os.time() .. "_" .. math.random(1000, 9999)
+	local session = {
 		Token = sessionToken,
+		AttemptsRemaining = getParaConfig().MaxCaptureAttempts,
 		TargetMin = getParaConfig().TargetZone.Min,
 		TargetMax = getParaConfig().TargetZone.Max,
-		AttemptsLeft = event.CaptureSession and event.CaptureSession.AttemptsLeft or getParaConfig().MaxCaptureAttempts,
-		ExpiresAt = os.time() + 25,
+		Completed = false,
 		LastAttemptTime = 0,
 	}
+	event.CaptureSession = session
 
-	-- Notify client to open minigame
 	safeFireClient(player, {
 		Event = "OpenCaptureMinigame",
 		Token = sessionToken,
-		TargetMin = event.CaptureSession.TargetMin,
-		TargetMax = event.CaptureSession.TargetMax,
-		AttemptsLeft = event.CaptureSession.AttemptsLeft,
-		GhostName = GhostConfig.Ghosts.Bellhop.Name,
-		GhostRarity = GhostConfig.Ghosts.Bellhop.Rarity,
+		AttemptsLeft = session.AttemptsRemaining,
+		TargetMin = session.TargetMin,
+		TargetMax = session.TargetMax,
 	})
 
-	return true, {
-		Token = sessionToken,
-		TargetMin = event.CaptureSession.TargetMin,
-		TargetMax = event.CaptureSession.TargetMax,
-		AttemptsLeft = event.CaptureSession.AttemptsLeft,
-	}
+	return true, "Minigame started", sessionToken
 end
 
 function ParanormalService.SubmitCaptureAttempt(player, token, normalizedPos)
 	local plot = ParanormalService.HotelService.GetPlayerPlot(player)
-	if not plot then
-		return false, { Success = false, Message = "No active plot" }
-	end
+	if not plot then return false, { Message = "No plot" } end
 
 	local event = activeEvents[plot]
-	if not event or event.State ~= "CaptureAvailable" then
-		return false, { Success = false, Message = "Capture is not available" }
+	if not event or not event.CaptureSession then
+		return false, { Message = "No active capture session" }
 	end
 
 	local session = event.CaptureSession
-	if not session or session.Token ~= token then
-		return false, { Success = false, Message = "Invalid capture session token" }
+	if session.Token ~= token or session.Completed then
+		return false, { Message = "Invalid or expired session" }
 	end
 
-	if os.time() > session.ExpiresAt then
-		ParanormalService.FailEvent(plot, "Capture session expired")
-		return false, { Success = false, Message = "Capture window expired" }
-	end
+	session.AttemptsRemaining = session.AttemptsRemaining - 1
+	local isSuccess = (normalizedPos >= session.TargetMin and normalizedPos <= session.TargetMax)
 
-	if session.AttemptsLeft <= 0 then
-		return false, { Success = false, Message = "No attempts remaining" }
-	end
-
-	-- Cooldown between rapid clicks
-	local now = tick()
-	if now - session.LastAttemptTime < (getParaConfig().AttemptCooldown or 0.8) then
-		return false, { Success = false, Message = "Wait before next attempt" }
-	end
-	session.LastAttemptTime = now
-	session.AttemptsLeft = session.AttemptsLeft - 1
-
-	local isHit = (typeof(normalizedPos) == "number") and (normalizedPos >= session.TargetMin and normalizedPos <= session.TargetMax)
-
-	if isHit then
-		-- SUCCESSFUL CAPTURE!
-		event.State = "Completed"
-		event.FlickerRunning = false
-
-		-- Award Base Ectoplasm
-		local ectoReward = getParaConfig().BaseEctoplasmReward or 35
-		ParanormalService.EconomyService.AddEctoplasm(player, ectoReward, "GhostCaptured")
-
-		-- Roll for Ghost Discovery (Jasper the Bellhop)
-		local roll = math.random()
-		local discoveredGhost = nil
-		local bonusCoins = 0
-
-		if roll <= getParaConfig().GhostDiscoverChance then
-			-- Weighted ghost selection among the 3 types
-			local ghostPool = {
-				{ Id = "Bellhop", Weight = GhostConfig.Ghosts.Bellhop.DropWeight or 55 },
-				{ Id = "Housekeeper", Weight = GhostConfig.Ghosts.Housekeeper.DropWeight or 30 },
-				{ Id = "Poltergeist", Weight = GhostConfig.Ghosts.Poltergeist.DropWeight or 15 },
+	if isSuccess then
+		session.Completed = true
+		ParanormalService.CompleteEvent(plot, true)
+		return true, { Message = "Containment successful!", Success = true }
+	else
+		if session.AttemptsRemaining > 0 then
+			return false, {
+				Message = "Missed the sweet spot! Try again!",
+				Success = false,
+				RetriesLeft = session.AttemptsRemaining,
 			}
-			local totalWeight = 0
-			for _, item in ipairs(ghostPool) do totalWeight = totalWeight + item.Weight end
-			local rnd = math.random(1, totalWeight)
-			local cum = 0
-			for _, item in ipairs(ghostPool) do
-				cum = cum + item.Weight
-				if rnd <= cum then
-					discoveredGhost = item.Id
-					break
-				end
+		else
+			session.Completed = true
+			ParanormalService.CompleteEvent(plot, false)
+			return false, {
+				Message = "Containment failed. Spirit escaped!",
+				Success = false,
+				RetriesLeft = 0,
+			}
+		end
+	end
+end
+
+function ParanormalService.CompleteEvent(plot, wasSuccess)
+	local event = activeEvents[plot]
+	if not event then return end
+
+	local player = event.Player
+
+	if wasSuccess then
+		local ectoReward = getParaConfig().BaseEctoplasmReward
+		ParanormalService.EconomyService.AddEctoplasm(player, ectoReward, "ParanormalEventSuccess")
+
+		-- Determine ghost reward pool based on event type
+		local discoveredGhost = nil
+		local roll = math.random()
+		if roll <= getParaConfig().GhostDiscoverChance then
+			if event.EventType == "LivingLuggage" then
+				discoveredGhost = "Housekeeper"
+			elseif event.EventType == "MirrorVisitor" then
+				discoveredGhost = "Poltergeist"
+			else
+				discoveredGhost = "Bellhop"
 			end
-			discoveredGhost = discoveredGhost or "Bellhop"
 			ParanormalService.EconomyService.AddDiscoveredGhost(player, discoveredGhost)
 		else
-			bonusCoins = getParaConfig().ConsolationCoins or 50
-			ParanormalService.EconomyService.AddCoins(player, bonusCoins, "GhostEscapeBonus")
+			ParanormalService.EconomyService.AddCoins(player, getParaConfig().ConsolationCoins, "GhostDiscoveryMiss")
 		end
 
-		ParanormalService.EconomyService.SetTutorialStep(player, 5)
-
-		-- Notify client of victory
 		safeFireClient(player, {
 			Event = "EventCompleted",
 			Success = true,
-			DiscoveredGhost = discoveredGhost,
-			GhostData = discoveredGhost and GhostConfig.Ghosts[discoveredGhost] or nil,
 			Ectoplasm = ectoReward,
-			Coins = bonusCoins,
+			Coins = discoveredGhost == nil and getParaConfig().ConsolationCoins or 0,
+			DiscoveredGhost = discoveredGhost,
 		})
-
-		-- Visual capture suction effect
-		if event.GhostModel and event.GhostModel.PrimaryPart then
-			task.spawn(function()
-				for i = 1, 10 do
-					if event.GhostModel and event.GhostModel.PrimaryPart then
-						event.GhostModel.PrimaryPart.Size = event.GhostModel.PrimaryPart.Size * 0.8
-					end
-					task.wait(0.05)
-				end
-			end)
-		end
-
-		-- Clean up after delay & start cooldown
-		task.delay(2.5, function()
-			ParanormalService.CleanupEvent(plot)
-			event.State = "Cooldown"
-			event.CooldownUntil = os.time() + getParaConfig().CooldownDuration
-		end)
-
-		return true, {
-			Success = true,
-			DiscoveredGhost = discoveredGhost,
-			GhostData = discoveredGhost and GhostConfig.Ghosts[discoveredGhost] or nil,
-			Ectoplasm = ectoReward,
-			Coins = bonusCoins,
-		}
 	else
-		-- MISSED ATTEMPT
-		if session.AttemptsLeft > 0 then
-			return false, {
-				Success = false,
-				RetriesLeft = session.AttemptsLeft,
-				Message = string.format("Containment slipped! %d attempt remaining.", session.AttemptsLeft),
-			}
-		else
-			-- ALL ATTEMPTS EXHAUSTED -> FAIL
-			ParanormalService.FailEvent(plot, "The spirit broke free and vanished!")
-			return false, {
-				Success = false,
-				RetriesLeft = 0,
-				Message = "The spirit broke free and fled into the walls!",
-			}
-		end
+		safeFireClient(player, {
+			Event = "EventFailed",
+			Message = "The entity dispersed into the ether.",
+		})
 	end
+
+	ParanormalService.EndEvent(plot)
 end
 
 function ParanormalService.FailEvent(plot, reason)
 	local event = activeEvents[plot]
-	if not event then return end
-
-	event.State = "Failed"
-	event.FlickerRunning = false
-
-	if event.Player and event.Player.Parent then
+	if event and event.Player then
 		safeFireClient(event.Player, {
 			Event = "EventFailed",
-			Message = reason or "The paranormal disturbance subsided.",
+			Message = reason or "Event ended.",
 		})
 	end
-
-	task.delay(2, function()
-		ParanormalService.CleanupEvent(plot)
-		event.State = "Cooldown"
-		event.CooldownUntil = os.time() + getParaConfig().CooldownDuration
-	end)
+	ParanormalService.EndEvent(plot)
 end
 
-function ParanormalService.CleanupEvent(plot)
+function ParanormalService.EndEvent(plot)
 	local event = activeEvents[plot]
 	if not event then return end
 
 	event.FlickerRunning = false
 
-	if event.GhostModel then
+	for _, p in ipairs(event.ClueInstances or {}) do
+		if p and p.Parent then p:Destroy() end
+	end
+	for _, p in ipairs(event.DisturbanceParts or {}) do
+		if typeof(p) == "table" and p.Stop then
+			p.Stop()
+		elseif typeof(p) == "Instance" and p.Parent then
+			p:Destroy()
+		end
+	end
+	if event.GhostModel and event.GhostModel.Parent then
 		event.GhostModel:Destroy()
-		event.GhostModel = nil
 	end
 
-	for _, cluePart in ipairs(event.ClueInstances or {}) do
-		if cluePart and cluePart.Parent then
-			cluePart:Destroy()
-		end
-	end
-
-	for _, part in ipairs(event.DisturbanceParts or {}) do
-		if part and part.Parent then
-			part:Destroy()
-		end
-	end
-
+	event.State = "Cooldown"
+	event.CooldownUntil = os.time() + getParaConfig().CooldownDuration
+	event.Clues = {}
 	event.ClueInstances = {}
 	event.DisturbanceParts = {}
+	event.GhostModel = nil
 	event.CaptureSession = nil
 end
 
 function ParanormalService.CleanupPlot(plot)
-	ParanormalService.CleanupEvent(plot)
+	ParanormalService.EndEvent(plot)
 	activeEvents[plot] = nil
 end
 

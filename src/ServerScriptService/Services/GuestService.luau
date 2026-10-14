@@ -1,4 +1,4 @@
--- ServerScriptService/Services/GuestService.lua
+-- ServerScriptService/Services/GuestService.luau
 local RepStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
@@ -11,13 +11,16 @@ local GuestStateChanged = Network.GuestStateChanged
 
 local GuestService = {}
 local isRunning = false
+local guestModels = {}
 
 GuestService.EconomyService = require(SSS.Services.EconomyService)
 GuestService.HotelService = require(SSS.Services.HotelService)
+local MonetizationService = nil
 
-function GuestService.Init(economyService, hotelService)
+function GuestService.Init(economyService, hotelService, monetizationService)
 	GuestService.EconomyService = economyService or GuestService.EconomyService
 	GuestService.HotelService = hotelService or GuestService.HotelService
+	MonetizationService = monetizationService or require(SSS.Services.MonetizationService)
 end
 
 function GuestService.Start()
@@ -26,7 +29,7 @@ function GuestService.Start()
 
 	task.spawn(function()
 		while isRunning do
-			task.wait(GameConfig.GuestArrivalInterval)
+			task.wait(GameConfig.GuestArrivalInterval or 7)
 			GuestService.CheckAllPlotsForGuests()
 		end
 	end)
@@ -48,16 +51,39 @@ function GuestService.CheckAllPlotsForGuests()
 	end
 end
 
+-- Pick guest type by weight
+local function rollGuestType()
+	local types = GameConfig.GuestTypes or {}
+	local totalWeight = 0
+	for _, gType in pairs(types) do
+		totalWeight = totalWeight + (gType.Weight or 10)
+	end
+
+	local roll = math.random(1, math.max(1, totalWeight))
+	local current = 0
+	for _, gType in pairs(types) do
+		current = current + (gType.Weight or 10)
+		if roll <= current then
+			return gType
+		end
+	end
+	return types.Regular or { Id = "Regular", Name = "Ordinary Specter", PayoutMultiplier = 1.0, Color = Color3.fromRGB(150, 225, 255) }
+end
+
 function GuestService.TrySpawnGuestForPlot(plot)
 	local state = plot:FindFirstChild("PlotState")
 	if not state then return end
 
+	local isF2Unlocked = GuestService.HotelService.IsFloorUnlocked(plot, 2)
 	local availableRooms = {}
-	if not state.Room1Occupied.Value then
-		table.insert(availableRooms, "Room1")
-	end
-	if not state.Room2Occupied.Value then
-		table.insert(availableRooms, "Room2")
+
+	for roomId, roomConfig in pairs(GameConfig.Rooms) do
+		local floorIdx = roomConfig.Floor or 1
+		local eligible = (floorIdx == 1) or (floorIdx == 2 and isF2Unlocked)
+		local occVal = state:FindFirstChild(roomId .. "Occupied")
+		if eligible and occVal and occVal.Value == false then
+			table.insert(availableRooms, roomId)
+		end
 	end
 
 	if #availableRooms == 0 then
@@ -70,21 +96,25 @@ function GuestService.TrySpawnGuestForPlot(plot)
 	local ownerUserId = plot:GetAttribute("OwnerUserId")
 	local player = game.Players:GetPlayerByUserId(ownerUserId)
 
+	local guestType = rollGuestType()
+
 	task.spawn(function()
-		GuestService.RunGuestStay(plot, player, chosenRoomId)
+		GuestService.RunGuestStay(plot, player, chosenRoomId, guestType)
 	end)
 end
 
-function GuestService.CreateGhostGuestModel(startCFrame)
+function GuestService.CreateGhostGuestModel(startCFrame, guestType)
 	local model = Instance.new("Model")
-	model.Name = "GhostGuest"
+	model.Name = "GhostGuest_" .. guestType.Id
+
+	local baseColor = guestType.Color or Color3.fromRGB(150, 225, 255)
 
 	local body = Instance.new("Part")
 	body.Name = "Body"
 	body.Shape = Enum.PartType.Cylinder
 	body.Size = Vector3.new(3.5, 2, 2)
 	body.CFrame = startCFrame * CFrame.Angles(0, 0, math.rad(90))
-	body.Color = Color3.fromRGB(150, 225, 255)
+	body.Color = baseColor
 	body.Material = Enum.Material.Neon
 	body.Transparency = 0.35
 	body.Anchored = true
@@ -96,198 +126,213 @@ function GuestService.CreateGhostGuestModel(startCFrame)
 	head.Shape = Enum.PartType.Ball
 	head.Size = Vector3.new(2.2, 2.2, 2.2)
 	head.CFrame = startCFrame * CFrame.new(0, 2, 0)
-	head.Color = Color3.fromRGB(180, 235, 255)
+	head.Color = baseColor
 	head.Material = Enum.Material.Neon
 	head.Transparency = 0.3
 	head.Anchored = true
 	head.CanCollide = false
 	head.Parent = model
 
-	local leftEye = Instance.new("Part")
-	leftEye.Size = Vector3.new(0.4, 0.4, 0.4)
-	leftEye.Shape = Enum.PartType.Ball
-	leftEye.Color = Color3.fromRGB(40, 20, 60)
-	leftEye.CFrame = startCFrame * CFrame.new(-0.4, 2.2, -0.9)
-	leftEye.Anchored = true
-	leftEye.CanCollide = false
-	leftEye.Parent = model
+	-- Guest Type Special Effects
+	if guestType.Id == "VIP" then
+		-- Golden Sparkles ParticleEmitter
+		local sparkles = Instance.new("ParticleEmitter")
+		sparkles.Name = "VIPSparkles"
+		sparkles.Color = ColorSequence.new(Color3.fromRGB(255, 230, 100))
+		sparkles.Size = NumberSequence.new(0.4, 0.8)
+		sparkles.Rate = 12
+		sparkles.Speed = NumberRange.new(1, 2)
+		sparkles.Lifetime = NumberRange.new(1, 2)
+		sparkles.Parent = head
 
-	local rightEye = Instance.new("Part")
-	rightEye.Size = Vector3.new(0.4, 0.4, 0.4)
-	rightEye.Shape = Enum.PartType.Ball
-	rightEye.Color = Color3.fromRGB(40, 20, 60)
-	rightEye.CFrame = startCFrame * CFrame.new(0.4, 2.2, -0.9)
-	rightEye.Anchored = true
-	rightEye.CanCollide = false
-	rightEye.Parent = model
+		-- Golden Halo / Tophat
+		local hat = Instance.new("Part")
+		hat.Name = "VIPHat"
+		hat.Shape = Enum.PartType.Cylinder
+		hat.Size = Vector3.new(0.8, 1.6, 1.6)
+		hat.CFrame = startCFrame * CFrame.new(0, 3.2, 0) * CFrame.Angles(0, 0, math.rad(90))
+		hat.Color = Color3.fromRGB(240, 190, 40)
+		hat.Material = Enum.Material.Metal
+		hat.Anchored = true
+		hat.CanCollide = false
+		hat.Parent = model
+	elseif guestType.Id == "Occultist" then
+		-- Purple occult runes particle
+		local runes = Instance.new("ParticleEmitter")
+		runes.Name = "OccultRunes"
+		runes.Color = ColorSequence.new(Color3.fromRGB(200, 120, 255))
+		runes.Size = NumberSequence.new(0.5, 1.0)
+		runes.Rate = 10
+		runes.Speed = NumberRange.new(0.5, 1.5)
+		runes.Lifetime = NumberRange.new(1.5, 2.5)
+		runes.Parent = head
+	end
 
-	local hat = Instance.new("Part")
-	hat.Name = "TopHat"
-	hat.Size = Vector3.new(1.4, 1.2, 1.4)
-	hat.CFrame = startCFrame * CFrame.new(0, 3.4, 0)
-	hat.Color = Color3.fromRGB(50, 30, 70)
-	hat.Material = Enum.Material.Fabric
-	hat.Anchored = true
-	hat.CanCollide = false
-	hat.Parent = model
-
-	local brim = Instance.new("Part")
-	brim.Name = "Brim"
-	brim.Size = Vector3.new(2.2, 0.2, 2.2)
-	brim.CFrame = startCFrame * CFrame.new(0, 2.8, 0)
-	brim.Color = Color3.fromRGB(80, 40, 110)
-	brim.Material = Enum.Material.Fabric
-	brim.Anchored = true
-	brim.CanCollide = false
-	brim.Parent = model
-
-	local statusGui = Instance.new("BillboardGui")
-	statusGui.Name = "StatusGui"
-	statusGui.Size = UDim2.new(0, 180, 0, 50)
-	statusGui.StudsOffset = Vector3.new(0, 4.5, 0)
-	statusGui.AlwaysOnTop = true
-	statusGui.Parent = head
+	-- Overhead Guest Type Label
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "GuestGui"
+	bb.Size = UDim2.new(0, 150, 0, 36)
+	bb.StudsOffset = Vector3.new(0, 3.2, 0)
+	bb.AlwaysOnTop = true
+	bb.Parent = head
 
 	local label = Instance.new("TextLabel")
-	label.Name = "StatusLabel"
 	label.Size = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 0.2
-	label.BackgroundColor3 = Color3.fromRGB(30, 20, 45)
+	label.BackgroundTransparency = 1
 	label.Font = Enum.Font.GothamBold
-	label.Text = "👻 Checking In..."
-	label.TextColor3 = Color3.fromRGB(180, 235, 255)
-	label.TextScaled = true
-	label.Parent = statusGui
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = label
+	label.Text = guestType.Name
+	label.TextColor3 = baseColor
+	label.TextSize = 12
+	label.Parent = bb
 
 	model.PrimaryPart = head
 	return model
 end
 
-function GuestService.MoveModel(model, targetCFrame, duration)
-	if not model or not model.PrimaryPart then return end
-	local primary = model.PrimaryPart
-	local startCF = primary.CFrame
-	local offsetMap = {}
+function GuestService.MoveModelSmoothly(model, targetCFrame, duration)
+	local startTime = os.clock()
+	local startCFrame = model:GetPivot()
 
-	for _, part in ipairs(model:GetChildren()) do
-		if part:IsA("BasePart") then
-			offsetMap[part] = startCF:ToObjectSpace(part.CFrame)
-		end
+	while os.clock() - startTime < duration do
+		local alpha = (os.clock() - startTime) / duration
+		alpha = math.clamp(alpha, 0, 1)
+		local currentCF = startCFrame:Lerp(targetCFrame, alpha)
+		model:PivotTo(currentCF)
+		task.wait(0.03)
 	end
-
-	local steps = math.max(1, math.floor(duration * 20))
-	for i = 1, steps do
-		local alpha = i / steps
-		local currentCF = startCF:Lerp(targetCFrame, alpha)
-		for part, relCF in pairs(offsetMap) do
-			if part and part.Parent then
-				part.CFrame = currentCF * relCF
-			end
-		end
-		task.wait(duration / steps)
-	end
+	model:PivotTo(targetCFrame)
 end
 
-function GuestService.RunGuestStay(plot, player, roomId)
-	local lobby = plot:FindFirstChild("Lobby")
+function GuestService.CalculateSatisfaction(player, plot, roomLevel)
+	local satisfaction = 100 -- Base
+
+	-- Room Quality: +10% per level above 1
+	satisfaction = satisfaction + (roomLevel - 1) * 10
+
+	-- Staff Presence
+	if player then
+		local staff = GuestService.EconomyService.GetAssignedStaff(player)
+		if staff[1] or staff[2] then
+			satisfaction = satisfaction + 15
+		end
+		if staff[1] == "Bellhop" or staff[2] == "Bellhop" then
+			satisfaction = satisfaction + 10
+		end
+	end
+
+	return math.clamp(satisfaction, 80, 175)
+end
+
+function GuestService.RunGuestStay(plot, player, roomId, guestType)
+	local state = plot:FindFirstChild("PlotState")
 	local room = plot:FindFirstChild(roomId)
-	if not lobby or not room then return end
+	local lobby = plot:FindFirstChild("Lobby")
+	local spawnPart = plot:FindFirstChild("PlotSpawn")
+
+	if not room or not lobby or not spawnPart then
+		if state and state:FindFirstChild(roomId .. "Occupied") then
+			state[roomId .. "Occupied"].Value = false
+		end
+		return
+	end
 
 	local checkInSpot = lobby:FindFirstChild("GuestCheckInSpot")
 	local restSpot = room:FindFirstChild("GuestRestSpot")
-	local entranceCF = plot.PlotSpawn.CFrame + Vector3.new(0, 2, 0)
-	if not checkInSpot or not restSpot then return end
 
-	local guest = GuestService.CreateGhostGuestModel(entranceCF)
-	guest.Parent = plot
+	if not checkInSpot or not restSpot then
+		if state and state:FindFirstChild(roomId .. "Occupied") then
+			state[roomId .. "Occupied"].Value = false
+		end
+		return
+	end
 
-	local statusLabel = guest.Head.StatusGui.StatusLabel
+	local guestModel = GuestService.CreateGhostGuestModel(spawnPart.CFrame + Vector3.new(0, 1.5, 0), guestType)
+	guestModel.Parent = plot
 
-	-- 1. Move to Reception
-	GuestService.MoveModel(guest, checkInSpot.CFrame + Vector3.new(0, 2.5, 0), 1.6)
-	statusLabel.Text = "🛎️ Ringing Bell..."
-	task.wait(1.2)
+	guestModels[plot] = guestModels[plot] or {}
+	table.insert(guestModels[plot], guestModel)
 
-	-- 2. Move to Room
-	statusLabel.Text = "🛏️ Heading to " .. roomId .. "..."
-	GuestService.MoveModel(guest, restSpot.CFrame + Vector3.new(0, 2.2, 0), 2.0)
+	-- 1. Walk from Spawn to Reception Desk
+	GuestService.MoveModelSmoothly(guestModel, checkInSpot.CFrame + Vector3.new(0, 1.5, 0), 2.0)
+	task.wait(1.0) -- Check-in moment
 
-	-- 3. Calculate Staff Bonuses (Housekeeper Turnover & Bellhop Tip)
-	local tipBonus = 0
-	local turnoverReduction = 0
+	-- 2. Walk to Room
+	GuestService.MoveModelSmoothly(guestModel, restSpot.CFrame + Vector3.new(0, 1.5, 0), 2.5)
+
+	-- 3. Room Stay Duration (modified by Housekeeper and active boosts)
+	local roomLevel = state[roomId .. "Level"].Value or 1
+	local stayDuration = GameConfig.BaseStayDuration or 8
+
 	if player then
-		local profile = GuestService.EconomyService.GetProfile(player)
-		local assigned = GuestService.EconomyService.GetAssignedStaff(player)
-		if profile and assigned then
-			for slotIdx, ghostId in pairs(assigned) do
-				if ghostId == "Bellhop" then
-					local gData = profile.DiscoveredGhosts["Bellhop"]
-					local lv = gData and gData.Level or 1
-					tipBonus = tipBonus + GhostConfig.Ghosts.Bellhop.Ability.Calculate(lv)
-				elseif ghostId == "Housekeeper" then
-					local gData = profile.DiscoveredGhosts["Housekeeper"]
-					local lv = gData and gData.Level or 1
-					turnoverReduction = turnoverReduction + GhostConfig.Ghosts.Housekeeper.Ability.Calculate(lv)
-				end
+		local staff = GuestService.EconomyService.GetAssignedStaff(player)
+		for _, ghostId in pairs(staff) do
+			if ghostId == "Housekeeper" then
+				local prof = GuestService.EconomyService.GetProfile(player)
+				local lv = prof and prof.DiscoveredGhosts["Housekeeper"] and prof.DiscoveredGhosts["Housekeeper"].Level or 1
+				local reduction = GhostConfig.Ghosts.Housekeeper.Ability.Calculate(lv)
+				stayDuration = math.max(3.0, stayDuration - reduction)
 			end
 		end
 	end
 
-	-- 4. Rest in room (Turnover time reduced by Housekeeper)
-	local baseDuration = GameConfig.BaseStayDuration or 6
-	local actualDuration = math.max(2, math.floor(baseDuration - turnoverReduction))
-	for remaining = actualDuration, 1, -1 do
-		if not plot or not plot.Parent then
-			guest:Destroy()
-			return
-		end
-		if turnoverReduction > 0 then
-			statusLabel.Text = string.format("⚡ Quick Rest (%ds) [-%.1fs Maid]", remaining, turnoverReduction)
-		else
-			statusLabel.Text = string.format("💤 Resting... (%ds)", remaining)
-		end
-		task.wait(1)
-	end
+	task.wait(stayDuration)
 
-	-- 5. Payout with Bellhop tip bonus
-	local state = plot:FindFirstChild("PlotState")
-	local roomLevel = state and state[roomId .. "Level"].Value or 1
-	local roomConfig = GameConfig.Rooms[roomId]
-	local baseIncome = roomConfig and roomConfig.Upgrades[roomLevel] and roomConfig.Upgrades[roomLevel].Income or 15
-	local totalIncome = baseIncome + tipBonus
-
+	-- 4. Calculate Authoritative Payout with Satisfaction & Guest Type Multipliers
 	if player and player.Parent then
-		GuestService.EconomyService.AddCoins(player, totalIncome, "GuestCompletedStay")
+		local satisfaction = GuestService.CalculateSatisfaction(player, plot, roomLevel)
+		local roomConfig = GameConfig.Rooms[roomId]
+		local baseIncome = (roomConfig and roomConfig.Upgrades[roomLevel] and roomConfig.Upgrades[roomLevel].Income) or 15
+
+		local satisfactionMultiplier = satisfaction / 100.0
+		local guestTypeMultiplier = guestType.PayoutMultiplier or 1.0
+
+		-- Monetization & Reputation Multipliers
+		local serverMultiplier = 1.0
+		if MonetizationService then
+			serverMultiplier = MonetizationService.GetIncomeMultiplier(player)
+		end
+
+		local earnedCoins = math.floor(baseIncome * satisfactionMultiplier * guestTypeMultiplier * serverMultiplier)
+
+		-- Tip calculation
+		local tip = guestType.BonusTip or 0
+		local staff = GuestService.EconomyService.GetAssignedStaff(player)
+		for _, ghostId in pairs(staff) do
+			if ghostId == "Bellhop" then
+				local prof = GuestService.EconomyService.GetProfile(player)
+				local lv = prof and prof.DiscoveredGhosts["Bellhop"] and prof.DiscoveredGhosts["Bellhop"].Level or 1
+				tip = tip + GhostConfig.Ghosts.Bellhop.Ability.Calculate(lv)
+			end
+		end
+
+		local totalPayout = earnedCoins + tip
+		GuestService.EconomyService.AddCoins(player, totalPayout, "GuestCheckout_" .. roomId)
 		GuestService.EconomyService.IncrementGuestsServed(player)
+
+		-- Occultist Bonus Ectoplasm
+		local bonusEcto = guestType.BonusEctoplasm or 0
+		if bonusEcto > 0 then
+			GuestService.EconomyService.AddEctoplasm(player, bonusEcto, "OccultistBonus")
+		end
 
 		GuestStateChanged:FireClient(player, {
 			Event = "StayCompleted",
 			RoomId = roomId,
-			Income = totalIncome,
-			BaseIncome = baseIncome,
-			Tip = tipBonus,
-			Position = restSpot.Position,
+			GuestType = guestType.Name,
+			Satisfaction = satisfaction,
+			Income = earnedCoins,
+			Tip = tip,
+			BonusEctoplasm = bonusEcto,
 		})
 	end
 
-	if tipBonus > 0 then
-		statusLabel.Text = string.format("✨ Paid +%d 🪙! (+%d Tip) ✨", totalIncome, tipBonus)
-	else
-		statusLabel.Text = string.format("✨ Paid +%d 🪙! ✨", totalIncome)
+	-- 5. Departure
+	GuestService.MoveModelSmoothly(guestModel, spawnPart.CFrame + Vector3.new(0, 1.5, 0), 2.2)
+
+	-- Cleanup
+	if guestModel and guestModel.Parent then
+		guestModel:Destroy()
 	end
-	statusLabel.TextColor3 = Color3.fromRGB(255, 220, 50)
-	task.wait(1.5)
-
-	-- 6. Checkout
-	statusLabel.Text = "👻 Checking out..."
-	statusLabel.TextColor3 = Color3.fromRGB(180, 235, 255)
-	GuestService.MoveModel(guest, entranceCF, 2.0)
-
-	guest:Destroy()
 
 	if state and state:FindFirstChild(roomId .. "Occupied") then
 		state[roomId .. "Occupied"].Value = false
@@ -295,10 +340,13 @@ function GuestService.RunGuestStay(plot, player, roomId)
 end
 
 function GuestService.CleanupPlotGuests(plot)
-	for _, child in ipairs(plot:GetChildren()) do
-		if child.Name == "GhostGuest" then
-			child:Destroy()
+	if guestModels[plot] then
+		for _, m in ipairs(guestModels[plot]) do
+			if m and m.Parent then
+				m:Destroy()
+			end
 		end
+		guestModels[plot] = nil
 	end
 end
 

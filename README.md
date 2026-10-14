@@ -45,6 +45,34 @@ A supernatural Roblox tycoon built with Luau and Roblox Studio, engineered with 
   - Modal mutual exclusion ensuring Renovations, Journal, Welcome Back, and Minigame dialogs never overlap.
   - UISizeConstraints and scaled touch targets for mobile and tablet devices.
 
+### Phase 5: Multi-Floor Expansion, Replayability, Daily Quests & Monetization
+- **Second Floor Expansion (Spectral Wing)**:
+  - Grand staircase with velvet carpet runner and polished railings leading to Floor 2.
+  - Physical locked spectral barrier with floating cost billboard and ProximityPrompt.
+  - Server-authoritative unlock validation (250 Coins, Room 1 & 2 Lv 2 prerequisite).
+  - Unlocks *Room 3: Spectral Library* (45 base income) and *Room 4: Phantom Ballroom* (70 base income) with visual upgrade tiers.
+- **Two Additional Paranormal Disturbances**:
+  - *Living Luggage*: A haunted steamer trunk rattles across the lobby with green spark emitters; players investigate brass latches and luggage tags before containing the spirit.
+  - *Mirror Visitor*: Frosted vanity mirror manifestations with glowing ectoplasmic handprints and mirror reflections unlocking capture.
+- **Guest Variety & Dynamic Satisfaction**:
+  - `Regular Specters`: Standard room occupants.
+  - `VIP Guests`: Distinct golden sparkle aura, paying 2.0x base coins.
+  - `Occultist Guests`: Generates +15 bonus Ectoplasm upon checkout.
+  - Dynamic satisfaction rating (80%–175%) scaling payouts based on room tier.
+- **Daily Objectives System**:
+  - 4 rotating daily objectives: *Hospitality Deluxe*, *Spectral Cleanup*, *Golden Treasury*, *Supernatural Workforce*.
+  - 24-hour reset cycle with atomic server reward claiming and duplicate-claim protection.
+  - Dedicated `DailyQuestsGui` modal with progress bars and instant claim toasts.
+- **Hotel Reputation (Grand Renovation / Prestige)**:
+  - Optional prestige system for high-level hoteliers (requires Floor 2 unlocked and Room 1 & 2 at Level 2+).
+  - Grants permanent Hotel Reputation Stars (★1 through ★5), awarding +15% permanent income boost per star.
+  - Resets room upgrade levels and coins to 100 while strictly preserving discovered ghosts, ghost levels, ectoplasm, and lifetime statistics.
+  - Displays reputation star sign over the hotel entrance.
+- **Monetization Foundation**:
+  - Idempotent `MarketplaceService.ProcessReceipt` handler with dual-layer session cache and persistent purchase tracking.
+  - Support for Developer Products (Coin Bundles, 15m Ghost Surge turnover booster).
+  - Support for Game Passes (2x Hotel Income multiplier with automatic stacking, VIP Velvet Theme).
+
 ---
 
 ## 📁 Repository Structure
@@ -54,7 +82,7 @@ Ghostshift/
 ├── src/
 │   ├── ReplicatedStorage/
 │   │   ├── Configs/
-│   │   │   ├── GameConfig.luau       # Economy, room upgrades, offline caps & tutorial steps
+│   │   │   ├── GameConfig.luau       # Economy, floors, rooms, quests, prestige, monetization & offline caps
 │   │   │   └── GhostConfig.luau      # Ghost rarities, ability formulas & drop rates
 │   │   └── Shared/
 │   │       └── Formatters.luau       # Currency and duration formatting utilities
@@ -62,15 +90,16 @@ Ghostshift/
 │   │   ├── ServerMain.server.luau    # Server bootstrap, player lifecycle & Remote wiring
 │   │   └── Services/
 │   │       ├── DataService.luau      # Persistence, DataStore/Mock, offline calculations & autosave
-│   │       ├── EconomyService.luau   # Authoritative balances, upgrades, staff data & state sync
-│   │       ├── GuestService.luau     # Guest arrival cycle, room stay timer & tip rewards
-│   │       ├── HotelService.luau     # Plot assignment, visual building & upgrade transformations
-│   │       ├── ParanormalService.luau# Haunting events, clue prompts & containment minigame
+│   │       ├── EconomyService.luau   # Authoritative balances, upgrades, quests, prestige & state sync
+│   │       ├── GuestService.luau     # Guest arrival cycle, VIP/Occultist variety, satisfaction & payouts
+│   │       ├── HotelService.luau     # Plot assignment, Floor 2 unlocking, visual room transformations & star signs
+│   │       ├── MonetizationService.luau# Idempotent receipt handling, developer products & Game Pass bonuses
+│   │       ├── ParanormalService.luau# Multi-event system (Haunted Room, Living Luggage, Mirror Visitor) & minigame
 │   │       └── StaffService.luau     # 3D staff models, poltergeist tick loop & staff assignment
 │   └── StarterPlayerScripts/
 │       ├── ClientMain.client.luau    # Client initialization
 │       └── Controllers/
-│           └── HUDController.luau    # HUD, Renovations modal, Journal, Welcome Back & Minigame
+│           └── HUDController.luau    # HUD, Renovations modal, Journal, Welcome Back, Daily Quests & Minigame
 └── README.md
 ```
 

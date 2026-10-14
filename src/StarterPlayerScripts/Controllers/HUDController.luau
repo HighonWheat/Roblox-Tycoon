@@ -20,6 +20,9 @@ local LevelUpGhost = Network:WaitForChild("LevelUpGhost")
 local ClaimOfflineRewards = Network:WaitForChild("ClaimOfflineRewards")
 local OfflineRewardReady = Network:WaitForChild("OfflineRewardReady")
 local DismissTutorial = Network:WaitForChild("DismissTutorial")
+local UnlockFloor = Network:WaitForChild("UnlockFloor")
+local ClaimDailyReward = Network:WaitForChild("ClaimDailyReward")
+local RequestPrestige = Network:WaitForChild("RequestPrestige")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -27,6 +30,7 @@ local hud = playerGui:WaitForChild("HotelHUD")
 local captureGui = playerGui:WaitForChild("CaptureMinigameGui")
 local journalGui = playerGui:WaitForChild("GhostJournalGui")
 local wbGui = playerGui:WaitForChild("WelcomeBackGui")
+local dqGui = playerGui:WaitForChild("DailyQuestsGui")
 
 local HUDController = {}
 
@@ -51,6 +55,8 @@ function HUDController.Init()
 	local upgradeCloseBtn = upgradeModal.CloseBtn
 	local upgradeToast = upgradeModal.ToastLabel
 	local cardsFrame = upgradeModal.CardsFrame
+	local unlockF2Btn = upgradeModal:FindFirstChild("UnlockFloor2Btn")
+	local prestigeBtn = upgradeModal:FindFirstChild("PrestigeBtn")
 
 	-- Ghost Journal Modal
 	local toggleJournalBtn = hud:WaitForChild("ToggleJournalBtn")
@@ -59,6 +65,14 @@ function HUDController.Init()
 	local journalToast = journalModal.ToastLabel
 	local staffSection = journalModal.StaffSection
 	local rosterSection = journalModal.RosterSection
+
+	-- Daily Quests Modal
+	local toggleQuestsBtn = hud:WaitForChild("ToggleQuestsBtn")
+	local dqBackdrop = dqGui:WaitForChild("Backdrop")
+	local dqModal = dqBackdrop:WaitForChild("MainModal")
+	local dqCloseBtn = dqModal.HeaderFrame.CloseBtn
+	local dqToast = dqModal.ToastLabel
+	local questsFrame = dqModal.QuestsFrame
 
 	-- Minigame Elements
 	local minigameModal = captureGui:WaitForChild("MainModal")
@@ -88,15 +102,10 @@ function HUDController.Init()
 
 	-- Modal Mutual Exclusion (ensures only 1 modal is open on screen)
 	local function closeAllModalsExcept(targetModal)
-		if targetModal ~= upgradeModal then
-			upgradeModal.Visible = false
-		end
-		if targetModal ~= journalModal then
-			journalModal.Visible = false
-		end
-		if targetModal ~= wbBackdrop then
-			wbBackdrop.Visible = false
-		end
+		if targetModal ~= upgradeModal then upgradeModal.Visible = false end
+		if targetModal ~= journalModal then journalModal.Visible = false end
+		if targetModal ~= wbBackdrop then wbBackdrop.Visible = false end
+		if targetModal ~= dqBackdrop then dqBackdrop.Visible = false end
 		if targetModal ~= minigameModal and isMinigameActive then
 			HUDController.CloseMinigame()
 		end
@@ -129,16 +138,27 @@ function HUDController.Init()
 		journalModal.Visible = false
 	end)
 
+	toggleQuestsBtn.MouseButton1Click:Connect(function()
+		if not dqBackdrop.Visible then
+			closeAllModalsExcept(dqBackdrop)
+			dqBackdrop.Visible = true
+		else
+			dqBackdrop.Visible = false
+		end
+	end)
+
+	dqCloseBtn.MouseButton1Click:Connect(function()
+		dqBackdrop.Visible = false
+	end)
+
 	abortBtn.MouseButton1Click:Connect(function()
 		HUDController.CloseMinigame()
 	end)
 
-	-- Welcome Back Close Handler
 	wbCloseBtn.MouseButton1Click:Connect(function()
 		wbBackdrop.Visible = false
 	end)
 
-	-- Tutorial Dismiss Handler
 	if tutDismissBtn then
 		tutDismissBtn.MouseButton1Click:Connect(function()
 			tutBanner.Visible = false
@@ -153,7 +173,7 @@ function HUDController.Init()
 		upgradeToast.TextColor3 = isSuccess and Color3.fromRGB(120, 255, 150) or Color3.fromRGB(255, 120, 120)
 		task.delay(3, function()
 			if upgradeToast.Text == message then
-				upgradeToast.Text = "Tip: Upgrade rooms to earn more coins!"
+				upgradeToast.Text = "Tip: Upgrade rooms and unlock Floor 2 for higher income!"
 				upgradeToast.TextColor3 = Color3.fromRGB(230, 220, 255)
 			end
 		end)
@@ -170,7 +190,18 @@ function HUDController.Init()
 		end)
 	end
 
-	-- Setup Room Upgrade Cards
+	local function showQuestToast(message, isSuccess)
+		dqToast.Text = message
+		dqToast.TextColor3 = isSuccess and Color3.fromRGB(120, 255, 150) or Color3.fromRGB(255, 120, 120)
+		task.delay(3, function()
+			if dqToast.Text == message then
+				dqToast.Text = "Complete objectives and tap Claim to collect rewards!"
+				dqToast.TextColor3 = Color3.fromRGB(190, 180, 215)
+			end
+		end)
+	end
+
+	-- Setup Room Upgrade Cards (Room 1, Room 2, Room 3, Room 4)
 	local function setupUpgradeCard(roomId)
 		local card = cardsFrame:WaitForChild(roomId .. "Card")
 		local btn = card:WaitForChild("UpgradeBtn")
@@ -182,8 +213,34 @@ function HUDController.Init()
 		end)
 	end
 
-	setupUpgradeCard("Room1")
-	setupUpgradeCard("Room2")
+	for _, rId in ipairs({"Room1", "Room2", "Room3", "Room4"}) do
+		setupUpgradeCard(rId)
+	end
+
+	-- Unlock Floor 2 Button
+	if unlockF2Btn then
+		unlockF2Btn.MouseButton1Click:Connect(function()
+			unlockF2Btn.Text = "Unlocking..."
+			local success, message = UnlockFloor:InvokeServer(2)
+			showUpgradeToast(message, success)
+			if success then
+				unlockF2Btn.Text = "✨ 2ND FLOOR UNLOCKED ✨"
+				unlockF2Btn.BackgroundColor3 = Color3.fromRGB(40, 160, 100)
+			else
+				unlockF2Btn.Text = "🔒 UNLOCK 2ND FLOOR (250 🪙)"
+			end
+		end)
+	end
+
+	-- Grand Renovation (Prestige) Button
+	if prestigeBtn then
+		prestigeBtn.MouseButton1Click:Connect(function()
+			prestigeBtn.Text = "Renovating..."
+			local success, message = RequestPrestige:InvokeServer()
+			showUpgradeToast(message, success)
+			prestigeBtn.Text = "★ GRAND RENOVATION (PRESTIGE) ★"
+		end)
+	end
 
 	-- Setup Staff Slots Unassign Buttons
 	for slotIdx = 1, 2 do
@@ -247,6 +304,20 @@ function HUDController.Init()
 		end)
 	end
 
+	-- Setup Daily Quests Claim Buttons
+	for _, qId in ipairs({"GuestStays", "Haunting", "Earnings", "StaffDuty"}) do
+		local qCard = questsFrame:FindFirstChild(qId .. "Card")
+		if qCard then
+			local claimBtn = qCard:FindFirstChild("ClaimBtn")
+			if claimBtn then
+				claimBtn.MouseButton1Click:Connect(function()
+					local success, message = ClaimDailyReward:InvokeServer(qId)
+					showQuestToast(message, success)
+				end)
+			end
+		end
+	end
+
 	-- Welcome Back Offline Rewards Claim Handler
 	local isClaiming = false
 	wbClaimBtn.MouseButton1Click:Connect(function()
@@ -277,7 +348,6 @@ function HUDController.Init()
 		end
 	end)
 
-	-- Handle OfflineRewardReady from server
 	OfflineRewardReady.OnClientEvent:Connect(function(rewardData)
 		if not rewardData then return end
 		local durationStr = Formatters.FormatDuration(rewardData.ElapsedSeconds or 0)
@@ -302,12 +372,129 @@ function HUDController.Init()
 		wbBackdrop.Visible = true
 	end)
 
-	-- Update Ghost Journal UI
-	local function updateJournalUI(data)
+	-- Update Daily Quests UI
+	local function updateDailyQuestsUI(dailyData)
+		if not dailyData or not dailyData.Quests then return end
+		for qId, qInfo in pairs(dailyData.Quests) do
+			local card = questsFrame:FindFirstChild(qId .. "Card")
+			if card then
+				local cur = qInfo.Current or 0
+				local target = qInfo.Target or 1
+				local claimed = qInfo.Claimed == true
+				local tpl = GameConfig.DailyObjectives and GameConfig.DailyObjectives[qId]
+				local rewStr = ""
+				if tpl then
+					if tpl.RewardCoins and tpl.RewardCoins > 0 then rewStr = rewStr .. string.format("+%d 🪙 ", tpl.RewardCoins) end
+					if tpl.RewardEctoplasm and tpl.RewardEctoplasm > 0 then rewStr = rewStr .. string.format("+%d 🟣", tpl.RewardEctoplasm) end
+				end
+
+				card.ProgressLabel.Text = string.format("Progress: %d/%d | Reward: %s", cur, target, rewStr)
+
+				local claimBtn = card.ClaimBtn
+				if claimed then
+					claimBtn.Text = "CLAIMED ✓"
+					claimBtn.BackgroundColor3 = Color3.fromRGB(35, 55, 45)
+					claimBtn.TextColor3 = Color3.fromRGB(120, 200, 150)
+					claimBtn.Active = false
+				elseif cur >= target then
+					claimBtn.Text = "CLAIM!"
+					claimBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 100)
+					claimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+					claimBtn.Active = true
+				else
+					claimBtn.Text = string.format("%d/%d", cur, target)
+					claimBtn.BackgroundColor3 = Color3.fromRGB(50, 40, 65)
+					claimBtn.TextColor3 = Color3.fromRGB(160, 150, 175)
+					claimBtn.Active = false
+				end
+			end
+		end
+	end
+
+	-- Update UI with latest server state
+	local function updateUI(data)
+		latestData = data
+		local repStars = data.ReputationStars or 0
+		local starsPrefix = repStars > 0 and (string.rep("★", repStars) .. " ") or ""
+
+		coinsLabel.Text = starsPrefix .. Formatters.FormatNumber(data.Coins) .. " Coins"
+		incomeLabel.Text = "+" .. Formatters.FormatNumber(data.IncomeRate) .. " / Stay"
+		ectoLabel.Text = Formatters.FormatNumber(data.Ectoplasm or 0) .. " Ectoplasm"
+
+		local ghostCount = 0
+		if data.DiscoveredGhosts then
+			for _ in pairs(data.DiscoveredGhosts) do ghostCount = ghostCount + 1 end
+		end
+		ghostLabel.Text = string.format("Ghosts: %d/3", ghostCount)
+
+		if data.TutorialDismissed == true or (data.TutorialStep and data.TutorialStep > 6) then
+			tutBanner.Visible = false
+		else
+			tutBanner.Visible = true
+			tutTitle.Text = data.TutorialTitle or "Ghostshift Tutorial"
+			tutDesc.Text = data.TutorialDescription or ""
+		end
+
+		local isF2Unlocked = data.FloorsUnlocked and data.FloorsUnlocked[2] == true
+		if unlockF2Btn then
+			if isF2Unlocked then
+				unlockF2Btn.Text = "✨ 2ND FLOOR UNLOCKED ✨"
+				unlockF2Btn.BackgroundColor3 = Color3.fromRGB(35, 120, 75)
+				unlockF2Btn.Active = false
+			else
+				unlockF2Btn.Text = "🔒 UNLOCK 2ND FLOOR (250 🪙)"
+				unlockF2Btn.BackgroundColor3 = Color3.fromRGB(140, 60, 200)
+				unlockF2Btn.Active = true
+			end
+		end
+
+		if prestigeBtn then
+			local bonusPct = math.floor(repStars * 0.15 * 100)
+			prestigeBtn.Text = string.format("★ GRAND RENOVATION (Stars: %d • +%d%% Bonus) ★", repStars, bonusPct)
+		end
+
+		-- Update Room Upgrade Cards (Room 1-4)
+		for _, roomId in ipairs({"Room1", "Room2", "Room3", "Room4"}) do
+			local card = cardsFrame:FindFirstChild(roomId .. "Card")
+			if card then
+				local currentLv = data.RoomLevels[roomId] or 1
+				local roomDef = GameConfig.Rooms[roomId]
+				local nextUpgrade = roomDef and roomDef.Upgrades[currentLv + 1]
+				local isFloor2Room = (roomDef and roomDef.Floor == 2)
+
+				card.LevelLabel.Text = "Level " .. currentLv
+				local curIncome = roomDef and roomDef.Upgrades[currentLv] and roomDef.Upgrades[currentLv].Income or 15
+				card.IncomeLabel.Text = "+" .. curIncome .. " 🪙 / stay"
+
+				local btn = card.UpgradeBtn
+				if isFloor2Room and not isF2Unlocked then
+					card.NextUpgradeLabel.Text = "Requires 2nd Floor Unlocked!"
+					btn.Text = "Floor Locked"
+					btn.BackgroundColor3 = Color3.fromRGB(45, 35, 50)
+					btn.TextColor3 = Color3.fromRGB(130, 115, 140)
+				elseif nextUpgrade then
+					local diff = nextUpgrade.Income - curIncome
+					card.NextUpgradeLabel.Text = string.format("Next: %s (+%d income)", nextUpgrade.Description, diff)
+					btn.Text = string.format("Upgrade (%d 🪙)", nextUpgrade.Cost)
+					if data.Coins >= nextUpgrade.Cost then
+						btn.BackgroundColor3 = Color3.fromRGB(110, 45, 170)
+						btn.TextColor3 = Color3.fromRGB(255, 230, 120)
+					else
+						btn.BackgroundColor3 = Color3.fromRGB(60, 45, 75)
+						btn.TextColor3 = Color3.fromRGB(180, 160, 190)
+					end
+				else
+					card.NextUpgradeLabel.Text = "Fully Renovated to Maximum Level!"
+					btn.Text = "★ MAX LEVEL ★"
+					btn.BackgroundColor3 = Color3.fromRGB(45, 35, 55)
+					btn.TextColor3 = Color3.fromRGB(150, 140, 160)
+				end
+			end
+		end
+
+		-- Update Ghost Journal
 		local discovered = data.DiscoveredGhosts or {}
 		local assigned = data.AssignedStaff or {}
-
-		-- Update Staff Slots
 		for slotIdx = 1, 2 do
 			local card = staffSection:FindFirstChild(string.format("Slot_%dCard", slotIdx))
 			if card then
@@ -333,146 +520,31 @@ function HUDController.Init()
 			end
 		end
 
-		-- Update Roster Cards
-		for ghostId, def in pairs(GhostConfig.Ghosts) do
-			local card = rosterSection:FindFirstChild(ghostId .. "Card")
-			if card then
-				local ghostData = discovered[ghostId]
-				local isDiscovered = (ghostData ~= nil and (ghostData.CopiesOwned or 0) >= 1)
-				local actions = card.ActionsFrame
-				local assignBtn = actions.AssignBtn
-				local levelUpBtn = actions.LevelUpBtn
-				local stroke = card:FindFirstChild("CardStroke")
-
-				if isDiscovered then
-					local lv = ghostData.Level or 1
-					local copies = ghostData.CopiesOwned or 1
-					card.NameLabel.Text = def.Name
-					card.NameLabel.TextColor3 = def.Color
-					card.RarityBadge.Text = string.format("[%s] • Lv. %d (Owned: %d)", string.upper(def.Rarity), lv, copies)
-					card.RarityBadge.TextColor3 = GhostConfig.RarityColors[def.Rarity] or Color3.fromRGB(200, 200, 200)
-					card.PerkLabel.Text = string.format("%s: %s", def.Ability.Name, def.Ability.Format(lv))
-					card.PerkLabel.TextColor3 = Color3.fromRGB(240, 230, 255)
-					if stroke then stroke.Color = def.Color end
-
-					local isAssignedTo = nil
-					if assigned[1] == ghostId then isAssignedTo = 1
-					elseif assigned[2] == ghostId then isAssignedTo = 2 end
-
-					if isAssignedTo then
-						assignBtn.Text = string.format("On Duty (Slot %d)", isAssignedTo)
-						assignBtn.BackgroundColor3 = Color3.fromRGB(40, 120, 80)
-						assignBtn.TextColor3 = Color3.fromRGB(160, 255, 200)
-					else
-						assignBtn.Text = "Assign Staff"
-						assignBtn.BackgroundColor3 = Color3.fromRGB(90, 45, 140)
-						assignBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-					end
-
-					if lv >= 5 then
-						levelUpBtn.Text = "★ MAX LEVEL ★"
-						levelUpBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 55)
-						levelUpBtn.TextColor3 = Color3.fromRGB(150, 140, 160)
-					elseif copies >= 2 then
-						levelUpBtn.Text = string.format("Level Up (%d/1 Dupe)", copies - 1)
-						levelUpBtn.BackgroundColor3 = Color3.fromRGB(140, 90, 30)
-						levelUpBtn.TextColor3 = Color3.fromRGB(255, 230, 120)
-					else
-						levelUpBtn.Text = "Need Dupe (0/1)"
-						levelUpBtn.BackgroundColor3 = Color3.fromRGB(50, 40, 60)
-						levelUpBtn.TextColor3 = Color3.fromRGB(140, 130, 150)
-					end
-				else
-					card.NameLabel.Text = "??? (Undiscovered)"
-					card.NameLabel.TextColor3 = Color3.fromRGB(120, 110, 130)
-					card.RarityBadge.Text = string.format("[%s] • Locked", string.upper(def.Rarity))
-					card.RarityBadge.TextColor3 = Color3.fromRGB(100, 90, 110)
-					card.PerkLabel.Text = "Investigate paranormal hauntings in your hotel rooms to discover this spirit!"
-					card.PerkLabel.TextColor3 = Color3.fromRGB(110, 100, 120)
-					if stroke then stroke.Color = Color3.fromRGB(55, 45, 75) end
-
-					assignBtn.Text = "Locked"
-					assignBtn.BackgroundColor3 = Color3.fromRGB(40, 35, 50)
-					assignBtn.TextColor3 = Color3.fromRGB(110, 100, 120)
-
-					levelUpBtn.Text = "Locked"
-					levelUpBtn.BackgroundColor3 = Color3.fromRGB(40, 35, 50)
-					levelUpBtn.TextColor3 = Color3.fromRGB(110, 100, 120)
-				end
-			end
+		-- Update Daily Quests
+		if data.DailyObjectives then
+			updateDailyQuestsUI(data.DailyObjectives)
 		end
-	end
-
-	-- Update UI with latest server state
-	local function updateUI(data)
-		latestData = data
-		coinsLabel.Text = Formatters.FormatNumber(data.Coins) .. " Coins"
-		incomeLabel.Text = "+" .. Formatters.FormatNumber(data.IncomeRate) .. " / Stay"
-		ectoLabel.Text = Formatters.FormatNumber(data.Ectoplasm or 0) .. " Ectoplasm"
-
-		local ghostCount = 0
-		if data.DiscoveredGhosts then
-			for _ in pairs(data.DiscoveredGhosts) do
-				ghostCount = ghostCount + 1
-			end
-		end
-		ghostLabel.Text = string.format("Ghosts: %d/3", ghostCount)
-
-		-- Tutorial visibility check
-		if data.TutorialDismissed == true or (data.TutorialStep and data.TutorialStep > 6) then
-			tutBanner.Visible = false
-		else
-			tutBanner.Visible = true
-			tutTitle.Text = data.TutorialTitle or "Ghostshift Tutorial"
-			tutDesc.Text = data.TutorialDescription or ""
-		end
-
-		-- Update Room Upgrade Cards
-		for _, roomId in ipairs({"Room1", "Room2"}) do
-			local card = cardsFrame:FindFirstChild(roomId .. "Card")
-			if card then
-				local currentLv = data.RoomLevels[roomId] or 1
-				local roomDef = GameConfig.Rooms[roomId]
-				local nextUpgrade = roomDef.Upgrades[currentLv + 1]
-
-				card.LevelLabel.Text = "Level " .. currentLv
-				local curIncome = roomDef.Upgrades[currentLv] and roomDef.Upgrades[currentLv].Income or 15
-				card.IncomeLabel.Text = "+" .. curIncome .. " 🪙 / stay"
-
-				local btn = card.UpgradeBtn
-				if nextUpgrade then
-					local diff = nextUpgrade.Income - curIncome
-					card.NextUpgradeLabel.Text = string.format("Next: %s (+%d income)", nextUpgrade.Description, diff)
-					btn.Text = string.format("Upgrade (%d 🪙)", nextUpgrade.Cost)
-					if data.Coins >= nextUpgrade.Cost then
-						btn.BackgroundColor3 = Color3.fromRGB(110, 45, 170)
-						btn.TextColor3 = Color3.fromRGB(255, 230, 120)
-					else
-						btn.BackgroundColor3 = Color3.fromRGB(60, 45, 75)
-						btn.TextColor3 = Color3.fromRGB(180, 160, 190)
-					end
-				else
-					card.NextUpgradeLabel.Text = "Fully Renovated to Maximum Level!"
-					btn.Text = "★ MAX LEVEL ★"
-					btn.BackgroundColor3 = Color3.fromRGB(45, 35, 55)
-					btn.TextColor3 = Color3.fromRGB(150, 140, 160)
-				end
-			end
-		end
-
-		-- Update Ghost Journal
-		updateJournalUI(data)
 	end
 
 	PlayerStateUpdated.OnClientEvent:Connect(function(data)
 		updateUI(data)
 	end)
 
+	if DailyQuestsUpdated then
+		DailyQuestsUpdated.OnClientEvent:Connect(function(dailyData)
+			updateDailyQuestsUI(dailyData)
+		end)
+	end
+
 	GuestStateChanged.OnClientEvent:Connect(function(eventData)
 		if eventData.Event == "StayCompleted" then
-			local msg = string.format("✨ Guest completed stay in %s! (+%d 🪙)", eventData.RoomId, eventData.Income)
+			local gTypeName = eventData.GuestType or "Specter"
+			local msg = string.format("✨ %s completed stay in %s! (+%d 🪙)", gTypeName, eventData.RoomId, eventData.Income)
 			if eventData.Tip and eventData.Tip > 0 then
-				msg = msg .. string.format(" [Tip: +%d 🪙!]", eventData.Tip)
+				msg = msg .. string.format(" [Tip: +%d 🪙]", eventData.Tip)
+			end
+			if eventData.BonusEctoplasm and eventData.BonusEctoplasm > 0 then
+				msg = msg .. string.format(" [+%d 🟣 Ectoplasm!]", eventData.BonusEctoplasm)
 			end
 			showUpgradeToast(msg, true)
 		end
@@ -549,14 +621,14 @@ function HUDController.Init()
 		if eventData.Event == "HauntingStarted" then
 			alertBanner.Visible = true
 			alertBanner.BackgroundColor3 = Color3.fromRGB(45, 18, 35)
-			alertLabel.Text = string.format("⚠️ HAUNTING IN %s! Investigate the clues!", eventData.RoomName or eventData.RoomId)
+			alertLabel.Text = string.format("⚠️ DISTURBANCE: %s! Investigate the clues!", eventData.RoomName or eventData.RoomId)
 		elseif eventData.Event == "ClueFound" then
 			alertBanner.Visible = true
 			alertLabel.Text = string.format("🔎 Clues Discovered: (%d/%d)! (+%d Ectoplasm)", eventData.ClaimedCount, eventData.TotalClues, eventData.BonusEctoplasm or 5)
 		elseif eventData.Event == "CaptureReady" then
 			alertBanner.Visible = true
 			alertBanner.BackgroundColor3 = Color3.fromRGB(18, 45, 40)
-			alertLabel.Text = string.format("⚡ SPIRIT MANIFESTED! Approach %s to contain him!", eventData.GhostName or "Jasper")
+			alertLabel.Text = string.format("⚡ SPIRIT MANIFESTED: %s! Approach to contain!", eventData.GhostName or "Spirit")
 		elseif eventData.Event == "OpenCaptureMinigame" then
 			closeAllModalsExcept(minigameModal)
 			currentSessionToken = eventData.Token

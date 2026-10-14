@@ -1,4 +1,4 @@
--- ServerScriptService/Services/HotelService.lua
+-- ServerScriptService/Services/HotelService.luau
 local RepStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -11,9 +11,10 @@ _G.GhostshiftPlayerPlots = _G.GhostshiftPlayerPlots or {}
 local playerPlots = _G.GhostshiftPlayerPlots
 local promptConnections = {}
 
-function HotelService.Init(economyService, onUpgradeRequested)
+function HotelService.Init(economyService, onUpgradeRequested, onUnlockFloorRequested)
 	HotelService.EconomyService = economyService
 	HotelService.OnUpgradeRequested = onUpgradeRequested
+	HotelService.OnUnlockFloorRequested = onUnlockFloorRequested
 end
 
 function HotelService.GetPlayerPlot(player)
@@ -30,6 +31,78 @@ function HotelService.GetPlayerPlot(player)
 		end
 	end
 	return nil
+end
+
+function HotelService.IsFloorUnlocked(plot, floorIndex)
+	if floorIndex == 1 then return true end
+	local state = plot:FindFirstChild("PlotState")
+	if state and state:FindFirstChild("Floor2Unlocked") then
+		return state.Floor2Unlocked.Value == true
+	end
+	return false
+end
+
+function HotelService.UnlockPlotFloor(plot, floorIndex)
+	if floorIndex == 2 then
+		local state = plot:FindFirstChild("PlotState")
+		if state and state:FindFirstChild("Floor2Unlocked") then
+			state.Floor2Unlocked.Value = true
+		end
+
+		local f2 = plot:FindFirstChild("Floor2")
+		if f2 then
+			local barrier = f2:FindFirstChild("Floor2_LockedBarrier")
+			if barrier then
+				barrier.Transparency = 1
+				barrier.CanCollide = false
+				local prompt = barrier:FindFirstChild("UnlockPrompt")
+				if prompt then prompt.Enabled = false end
+				local gui = barrier:FindFirstChild("LockGui")
+				if gui then gui.Enabled = false end
+			end
+
+			-- Illuminate chandeliers
+			for _, child in ipairs(f2:GetChildren()) do
+				if child:IsA("BasePart") and string.find(child.Name, "Chandelier") then
+					local light = child:FindFirstChildWhichIsA("PointLight")
+					if light then light.Enabled = true end
+				end
+			end
+		end
+
+		-- Setup prompts for Room 3 and Room 4
+		local ownerId = plot:GetAttribute("OwnerUserId")
+		local player = ownerId and Players:GetPlayerByUserId(ownerId)
+		if player then
+			HotelService.SetupRoomPrompt(player, plot, "Room3")
+			HotelService.SetupRoomPrompt(player, plot, "Room4")
+		end
+
+		HotelService.UpdatePadDisplay(plot, "Room3", 1)
+		HotelService.UpdatePadDisplay(plot, "Room4", 1)
+	end
+end
+
+function HotelService.LockPlotFloor(plot, floorIndex)
+	if floorIndex == 2 then
+		local state = plot:FindFirstChild("PlotState")
+		if state and state:FindFirstChild("Floor2Unlocked") then
+			state.Floor2Unlocked.Value = false
+		end
+
+		local f2 = plot:FindFirstChild("Floor2")
+		if f2 then
+			local barrier = f2:FindFirstChild("Floor2_LockedBarrier")
+			if barrier then
+				barrier.Transparency = 0.4
+				barrier.CanCollide = true
+				local prompt = barrier:FindFirstChild("UnlockPrompt")
+				if prompt then prompt.Enabled = true end
+				local gui = barrier:FindFirstChild("LockGui")
+				if gui then gui.Enabled = true end
+			end
+		end
+	end
 end
 
 function HotelService.AssignPlot(player)
@@ -55,7 +128,13 @@ function HotelService.AssignPlot(player)
 
 				local sign = plot:FindFirstChild("Structure") and plot.Structure:FindFirstChild("SignBoard")
 				if sign and sign:FindFirstChild("SignGui") and sign.SignGui:FindFirstChild("OwnerLabel") then
-					sign.SignGui.OwnerLabel.Text = plot.Name .. " - " .. userName .. "'s Hotel"
+					local starsText = ""
+					local prof = HotelService.EconomyService and HotelService.EconomyService.GetProfile(player)
+					local stars = prof and prof.ReputationStars or 0
+					if stars > 0 then
+						starsText = string.rep("★", stars) .. " "
+					end
+					sign.SignGui.OwnerLabel.Text = string.format("%s%s - %s's Hotel", starsText, plot.Name, userName)
 				end
 
 				playerPlots[player] = plot
@@ -72,8 +151,9 @@ function HotelService.AssignPlot(player)
 					end)
 				end
 
-				HotelService.UpdatePadDisplay(plot, "Room1", 1)
-				HotelService.UpdatePadDisplay(plot, "Room2", 1)
+				for _, rId in ipairs({"Room1", "Room2", "Room3", "Room4"}) do
+					HotelService.UpdatePadDisplay(plot, rId, 1)
+				end
 
 				return plot
 			end
@@ -105,12 +185,19 @@ function HotelService.ReleasePlot(player)
 	if state then
 		state.Room1Occupied.Value = false
 		state.Room2Occupied.Value = false
+		if state:FindFirstChild("Room3Occupied") then state.Room3Occupied.Value = false end
+		if state:FindFirstChild("Room4Occupied") then state.Room4Occupied.Value = false end
 		state.Room1Level.Value = 1
 		state.Room2Level.Value = 1
+		if state:FindFirstChild("Room3Level") then state.Room3Level.Value = 1 end
+		if state:FindFirstChild("Room4Level") then state.Room4Level.Value = 1 end
+		if state:FindFirstChild("Floor2Unlocked") then state.Floor2Unlocked.Value = false end
 	end
 
-	HotelService.ResetRoomVisuals(plot, "Room1")
-	HotelService.ResetRoomVisuals(plot, "Room2")
+	for _, rId in ipairs({"Room1", "Room2", "Room3", "Room4"}) do
+		HotelService.ResetRoomVisuals(plot, rId)
+	end
+	HotelService.LockPlotFloor(plot, 2)
 
 	playerPlots[player] = nil
 end
@@ -149,7 +236,7 @@ function HotelService.ApplyRoomUpgradeVisuals(plot, roomId, newLevel)
 			for _, p in ipairs(decor2:GetDescendants()) do
 				if p:IsA("BasePart") then
 					p.Transparency = (p.Name == "EdgeTrim" and 0.3 or 0)
-					p.CanCollide = (p.Name == "FloatingCandle" and false or true)
+					p.CanCollide = (p.Name == "FloatingCandle" or p.Name == "FloatingBook" and false or true)
 				elseif p:IsA("Light") then
 					p.Enabled = true
 				end
@@ -163,7 +250,7 @@ function HotelService.ApplyRoomUpgradeVisuals(plot, roomId, newLevel)
 			for _, p in ipairs(decor3:GetDescendants()) do
 				if p:IsA("BasePart") then
 					p.Transparency = 0
-					p.CanCollide = (p.Name == "CrystalOrb" and false or true)
+					p.CanCollide = (p.Name == "CrystalOrb" or p.Name == "MagicGlobe" and false or true)
 				elseif p:IsA("Light") then
 					p.Enabled = true
 				end
@@ -185,6 +272,7 @@ function HotelService.UpdatePadDisplay(plot, roomId, currentLevel)
 	local frame = gui and gui:FindFirstChild("Frame")
 
 	local roomConfig = GameConfig.Rooms[roomId]
+	if not roomConfig then return end
 	local nextUpgrade = roomConfig.Upgrades[currentLevel + 1]
 
 	if nextUpgrade then
@@ -212,20 +300,46 @@ function HotelService.UpdatePadDisplay(plot, roomId, currentLevel)
 	end
 end
 
+function HotelService.SetupRoomPrompt(player, plot, roomId)
+	local room = plot:FindFirstChild(roomId)
+	local pad = room and room:FindFirstChild("UpgradePad")
+	local prompt = pad and pad:FindFirstChild("UpgradePrompt")
+	if prompt then
+		local conn = prompt.Triggered:Connect(function(triggerPlayer)
+			if triggerPlayer == player and HotelService.OnUpgradeRequested then
+				HotelService.OnUpgradeRequested(player, roomId)
+			end
+		end)
+		table.insert(promptConnections[plot], conn)
+	end
+end
+
 function HotelService.SetupPlotPrompts(player, plot)
 	promptConnections[plot] = {}
+
+	-- Room Upgrade Pads (Room 1 & Room 2)
 	for _, roomId in ipairs({"Room1", "Room2"}) do
-		local room = plot:FindFirstChild(roomId)
-		local pad = room and room:FindFirstChild("UpgradePad")
-		local prompt = pad and pad:FindFirstChild("UpgradePrompt")
-		if prompt then
-			local conn = prompt.Triggered:Connect(function(triggerPlayer)
-				if triggerPlayer == player then
-					HotelService.OnUpgradeRequested(player, roomId)
-				end
-			end)
-			table.insert(promptConnections[plot], conn)
+		HotelService.SetupRoomPrompt(player, plot, roomId)
+	end
+
+	-- If Floor 2 already unlocked, setup Room 3 & Room 4 prompts
+	if HotelService.IsFloorUnlocked(plot, 2) then
+		for _, roomId in ipairs({"Room3", "Room4"}) do
+			HotelService.SetupRoomPrompt(player, plot, roomId)
 		end
+	end
+
+	-- Floor 2 Unlock Barrier Prompt
+	local f2 = plot:FindFirstChild("Floor2")
+	local barrier = f2 and f2:FindFirstChild("Floor2_LockedBarrier")
+	local unlockPrompt = barrier and barrier:FindFirstChild("UnlockPrompt")
+	if unlockPrompt then
+		local conn = unlockPrompt.Triggered:Connect(function(triggerPlayer)
+			if triggerPlayer == player and HotelService.OnUnlockFloorRequested then
+				HotelService.OnUnlockFloorRequested(player, 2)
+			end
+		end)
+		table.insert(promptConnections[plot], conn)
 	end
 end
 
