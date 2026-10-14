@@ -7,12 +7,16 @@ local EconomyService = require(ServerScriptService.Services.EconomyService)
 local HotelService = require(ServerScriptService.Services.HotelService)
 local GuestService = require(ServerScriptService.Services.GuestService)
 local ParanormalService = require(ServerScriptService.Services.ParanormalService)
+local StaffService = require(ServerScriptService.Services.StaffService)
 
 local Network = RepStorage.Network
 local RequestUpgrade = Network.RequestUpgrade
 local InvestigateClue = Network.InvestigateClue
 local StartCapture = Network.StartCapture
 local SubmitCaptureAttempt = Network.SubmitCaptureAttempt
+local AssignStaff = Network.AssignStaff
+local UnassignStaff = Network.UnassignStaff
+local LevelUpGhost = Network.LevelUpGhost
 
 -- Handle Upgrade Request (from HUD or Pad)
 local function handleUpgradeRequest(player, roomId)
@@ -93,6 +97,18 @@ SubmitCaptureAttempt.OnServerInvoke = function(player, token, normalizedPos)
 	return ParanormalService.SubmitCaptureAttempt(player, token, normalizedPos)
 end
 
+AssignStaff.OnServerInvoke = function(player, slotIndex, ghostId)
+	return StaffService.AssignStaff(player, slotIndex, ghostId)
+end
+
+UnassignStaff.OnServerInvoke = function(player, slotIndex)
+	return StaffService.UnassignStaff(player, slotIndex)
+end
+
+LevelUpGhost.OnServerInvoke = function(player, ghostId)
+	return StaffService.LevelUpGhost(player, ghostId)
+end
+
 -- Init Services
 HotelService.Init(EconomyService, handleUpgradeRequest)
 GuestService.Init(EconomyService, HotelService)
@@ -101,28 +117,35 @@ GuestService.Start()
 ParanormalService.Init(EconomyService, HotelService)
 ParanormalService.Start()
 
+StaffService.Init(EconomyService, HotelService)
+StaffService.Start()
+
 local function setupPlayer(player)
+	print("[Ghostshift] Setting up player:", player.Name, player.UserId)
 	local profile = EconomyService.InitializePlayer(player)
+	print("[Ghostshift] Profile initialized. Starting Coins:", profile and profile.Coins)
 	local plot = HotelService.AssignPlot(player)
 	if not plot then
 		warn("[Ghostshift] No plots available for " .. player.Name)
+	else
+		print("[Ghostshift] Assigned plot:", plot.Name, "to", player.Name)
 	end
 end
 
+Players.PlayerAdded:Connect(setupPlayer)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(setupPlayer, player)
 end
-
-Players.PlayerAdded:Connect(setupPlayer)
 
 Players.PlayerRemoving:Connect(function(player)
 	local plot = HotelService.GetPlayerPlot(player)
 	if plot then
 		GuestService.CleanupPlotGuests(plot)
 		ParanormalService.CleanupPlot(plot)
+		StaffService.CleanupPlot(plot)
 		HotelService.ReleasePlot(player)
 	end
 	EconomyService.RemovePlayer(player)
 end)
 
-print("[Ghostshift] ServerMain (Phase 2 with ParanormalService) initialized successfully.")
+print("[Ghostshift] ServerMain (Phase 3 with StaffService and GhostJournal) initialized successfully.")

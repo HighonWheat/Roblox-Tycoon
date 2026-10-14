@@ -593,8 +593,25 @@ function ParanormalService.SubmitCaptureAttempt(player, token, normalizedPos)
 		local bonusCoins = 0
 
 		if roll <= getParaConfig().GhostDiscoverChance then
-			discoveredGhost = "Bellhop"
-			ParanormalService.EconomyService.AddDiscoveredGhost(player, "Bellhop")
+			-- Weighted ghost selection among the 3 types
+			local ghostPool = {
+				{ Id = "Bellhop", Weight = GhostConfig.Ghosts.Bellhop.DropWeight or 55 },
+				{ Id = "Housekeeper", Weight = GhostConfig.Ghosts.Housekeeper.DropWeight or 30 },
+				{ Id = "Poltergeist", Weight = GhostConfig.Ghosts.Poltergeist.DropWeight or 15 },
+			}
+			local totalWeight = 0
+			for _, item in ipairs(ghostPool) do totalWeight = totalWeight + item.Weight end
+			local rnd = math.random(1, totalWeight)
+			local cum = 0
+			for _, item in ipairs(ghostPool) do
+				cum = cum + item.Weight
+				if rnd <= cum then
+					discoveredGhost = item.Id
+					break
+				end
+			end
+			discoveredGhost = discoveredGhost or "Bellhop"
+			ParanormalService.EconomyService.AddDiscoveredGhost(player, discoveredGhost)
 		else
 			bonusCoins = getParaConfig().ConsolationCoins or 50
 			ParanormalService.EconomyService.AddCoins(player, bonusCoins, "GhostEscapeBonus")

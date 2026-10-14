@@ -1,3 +1,4 @@
+-- ServerScriptService/Services/HotelService.lua
 local RepStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
@@ -32,34 +33,50 @@ function HotelService.GetPlayerPlot(player)
 end
 
 function HotelService.AssignPlot(player)
+	local userId = player.UserId
+	local userName = player.DisplayName or player.Name
+
+	-- 1. Check if player already has an assigned plot
 	for _, plot in ipairs(HotelPlots:GetChildren()) do
-		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == 0 then
-			plot:SetAttribute("OwnerUserId", player.UserId)
-			plot:SetAttribute("OwnerName", player.DisplayName or player.Name)
-
-			local sign = plot:FindFirstChild("Structure") and plot.Structure:FindFirstChild("SignBoard")
-			if sign and sign:FindFirstChild("SignGui") and sign.SignGui:FindFirstChild("OwnerLabel") then
-				sign.SignGui.OwnerLabel.Text = plot.Name .. " - " .. (player.DisplayName or player.Name) .. "'s Hotel"
-			end
-
+		if plot:IsA("Model") and plot:GetAttribute("OwnerUserId") == userId then
 			playerPlots[player] = plot
 			HotelService.SetupPlotPrompts(player, plot)
-
-			if typeof(player) == "Instance" and player:IsA("Player") then
-				task.spawn(function()
-					local character = player.Character or player.CharacterAdded:Wait()
-					local root = character:WaitForChild("HumanoidRootPart", 5)
-					local spawnPart = plot:FindFirstChild("PlotSpawn")
-					if root and spawnPart then
-						root.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
-					end
-				end)
-			end
-
-			HotelService.UpdatePadDisplay(plot, "Room1", 1)
-			HotelService.UpdatePadDisplay(plot, "Room2", 1)
-
 			return plot
+		end
+	end
+
+	-- 2. Find first vacant plot
+	for _, plot in ipairs(HotelPlots:GetChildren()) do
+		if plot:IsA("Model") then
+			local currentOwner = plot:GetAttribute("OwnerUserId")
+			if not currentOwner or currentOwner == 0 then
+				plot:SetAttribute("OwnerUserId", userId)
+				plot:SetAttribute("OwnerName", userName)
+
+				local sign = plot:FindFirstChild("Structure") and plot.Structure:FindFirstChild("SignBoard")
+				if sign and sign:FindFirstChild("SignGui") and sign.SignGui:FindFirstChild("OwnerLabel") then
+					sign.SignGui.OwnerLabel.Text = plot.Name .. " - " .. userName .. "'s Hotel"
+				end
+
+				playerPlots[player] = plot
+				HotelService.SetupPlotPrompts(player, plot)
+
+				if typeof(player) == "Instance" and player:IsA("Player") then
+					task.spawn(function()
+						local character = player.Character or player.CharacterAdded:Wait()
+						local root = character:WaitForChild("HumanoidRootPart", 5)
+						local spawnPart = plot:FindFirstChild("PlotSpawn")
+						if root and spawnPart then
+							root.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
+						end
+					end)
+				end
+
+				HotelService.UpdatePadDisplay(plot, "Room1", 1)
+				HotelService.UpdatePadDisplay(plot, "Room2", 1)
+
+				return plot
+			end
 		end
 	end
 	return nil

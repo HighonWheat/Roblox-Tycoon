@@ -1,17 +1,23 @@
+-- ServerScriptService/Services/GuestService.lua
 local RepStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local TweenService = game:GetService("TweenService")
+local SSS = game:GetService("ServerScriptService")
 
 local GameConfig = require(RepStorage.Configs.GameConfig)
+local GhostConfig = require(RepStorage.Configs.GhostConfig)
 local Network = RepStorage.Network
 local GuestStateChanged = Network.GuestStateChanged
 
 local GuestService = {}
 local isRunning = false
 
+GuestService.EconomyService = require(SSS.Services.EconomyService)
+GuestService.HotelService = require(SSS.Services.HotelService)
+
 function GuestService.Init(economyService, hotelService)
-	GuestService.EconomyService = economyService
-	GuestService.HotelService = hotelService
+	GuestService.EconomyService = economyService or GuestService.EconomyService
+	GuestService.HotelService = hotelService or GuestService.HotelService
 end
 
 function GuestService.Start()
@@ -137,7 +143,7 @@ function GuestService.CreateGhostGuestModel(startCFrame)
 
 	local statusGui = Instance.new("BillboardGui")
 	statusGui.Name = "StatusGui"
-	statusGui.Size = UDim2.new(0, 160, 0, 50)
+	statusGui.Size = UDim2.new(0, 180, 0, 50)
 	statusGui.StudsOffset = Vector3.new(0, 4.5, 0)
 	statusGui.AlwaysOnTop = true
 	statusGui.Parent = head
@@ -210,40 +216,73 @@ function GuestService.RunGuestStay(plot, player, roomId)
 	statusLabel.Text = "🛏️ Heading to " .. roomId .. "..."
 	GuestService.MoveModel(guest, restSpot.CFrame + Vector3.new(0, 2.2, 0), 2.0)
 
-	-- 3. Rest in room
-	local duration = GameConfig.BaseStayDuration
-	for remaining = duration, 1, -1 do
+	-- 3. Calculate Staff Bonuses (Housekeeper Turnover & Bellhop Tip)
+	local tipBonus = 0
+	local turnoverReduction = 0
+	if player then
+		local profile = GuestService.EconomyService.GetProfile(player)
+		local assigned = GuestService.EconomyService.GetAssignedStaff(player)
+		if profile and assigned then
+			for slotIdx, ghostId in pairs(assigned) do
+				if ghostId == "Bellhop" then
+					local gData = profile.DiscoveredGhosts["Bellhop"]
+					local lv = gData and gData.Level or 1
+					tipBonus = tipBonus + GhostConfig.Ghosts.Bellhop.Ability.Calculate(lv)
+				elseif ghostId == "Housekeeper" then
+					local gData = profile.DiscoveredGhosts["Housekeeper"]
+					local lv = gData and gData.Level or 1
+					turnoverReduction = turnoverReduction + GhostConfig.Ghosts.Housekeeper.Ability.Calculate(lv)
+				end
+			end
+		end
+	end
+
+	-- 4. Rest in room (Turnover time reduced by Housekeeper)
+	local baseDuration = GameConfig.BaseStayDuration or 6
+	local actualDuration = math.max(2, math.floor(baseDuration - turnoverReduction))
+	for remaining = actualDuration, 1, -1 do
 		if not plot or not plot.Parent then
 			guest:Destroy()
 			return
 		end
-		statusLabel.Text = string.format("💤 Resting... (%ds)", remaining)
+		if turnoverReduction > 0 then
+			statusLabel.Text = string.format("⚡ Quick Rest (%ds) [-%.1fs Maid]", remaining, turnoverReduction)
+		else
+			statusLabel.Text = string.format("💤 Resting... (%ds)", remaining)
+		end
 		task.wait(1)
 	end
 
-	-- 4. Payout
+	-- 5. Payout with Bellhop tip bonus
 	local state = plot:FindFirstChild("PlotState")
 	local roomLevel = state and state[roomId .. "Level"].Value or 1
 	local roomConfig = GameConfig.Rooms[roomId]
-	local income = roomConfig and roomConfig.Upgrades[roomLevel] and roomConfig.Upgrades[roomLevel].Income or 15
+	local baseIncome = roomConfig and roomConfig.Upgrades[roomLevel] and roomConfig.Upgrades[roomLevel].Income or 15
+	local totalIncome = baseIncome + tipBonus
 
 	if player and player.Parent then
-		GuestService.EconomyService.AddCoins(player, income, "GuestCompletedStay")
+		GuestService.EconomyService.AddCoins(player, totalIncome, "GuestCompletedStay")
 		GuestService.EconomyService.IncrementGuestsServed(player)
 
 		GuestStateChanged:FireClient(player, {
 			Event = "StayCompleted",
 			RoomId = roomId,
-			Income = income,
+			Income = totalIncome,
+			BaseIncome = baseIncome,
+			Tip = tipBonus,
 			Position = restSpot.Position,
 		})
 	end
 
-	statusLabel.Text = string.format("✨ Paid +%d 🪙! ✨", income)
+	if tipBonus > 0 then
+		statusLabel.Text = string.format("✨ Paid +%d 🪙! (+%d Tip) ✨", totalIncome, tipBonus)
+	else
+		statusLabel.Text = string.format("✨ Paid +%d 🪙! ✨", totalIncome)
+	end
 	statusLabel.TextColor3 = Color3.fromRGB(255, 220, 50)
 	task.wait(1.5)
 
-	-- 5. Checkout
+	-- 6. Checkout
 	statusLabel.Text = "👻 Checking out..."
 	statusLabel.TextColor3 = Color3.fromRGB(180, 235, 255)
 	GuestService.MoveModel(guest, entranceCF, 2.0)

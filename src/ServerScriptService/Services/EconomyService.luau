@@ -2,12 +2,14 @@ local RepStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local GameConfig = require(RepStorage.Configs.GameConfig)
+local GhostConfig = require(RepStorage.Configs.GhostConfig)
 local Network = RepStorage.Network
 local PlayerStateUpdated = Network.PlayerStateUpdated
 
 local EconomyService = {}
 _G.GhostshiftProfiles = _G.GhostshiftProfiles or {}
 local profiles = _G.GhostshiftProfiles
+EconomyService.Profiles = _G.GhostshiftProfiles
 local locks = {}
 
 local function getPlayerKey(player)
@@ -40,7 +42,11 @@ function EconomyService.InitializePlayer(player)
 			Room1 = 1,
 			Room2 = 1,
 		},
-		DiscoveredGhosts = {},
+		DiscoveredGhosts = {}, -- [ghostId] = { Id = ghostId, Level = 1, CopiesOwned = 1, DiscoveredAt = os.time() }
+		AssignedStaff = {
+			[1] = nil,
+			[2] = nil,
+		},
 		TutorialStep = 1,
 		TotalGuestsServed = 0,
 		TotalParanormalSolved = 0,
@@ -80,6 +86,7 @@ function EconomyService.SyncPlayerState(player)
 			IncomeRate = incomeRate,
 			RoomLevels = p.RoomLevels,
 			DiscoveredGhosts = p.DiscoveredGhosts,
+			AssignedStaff = p.AssignedStaff,
 			TutorialStep = p.TutorialStep,
 			TutorialTitle = tutorialData.Title,
 			TutorialDescription = tutorialData.Description,
@@ -133,24 +140,88 @@ end
 
 function EconomyService.AddDiscoveredGhost(player, ghostId)
 	local p = EconomyService.GetProfile(player)
-	if not p then return false end
+	if not p then return false, 0 end
 	local isNew = false
 	if not p.DiscoveredGhosts[ghostId] then
 		p.DiscoveredGhosts[ghostId] = {
 			Id = ghostId,
-			DiscoveredAt = os.time(),
 			Level = 1,
+			CopiesOwned = 1,
+			DiscoveredAt = os.time(),
 		}
 		isNew = true
+	else
+		p.DiscoveredGhosts[ghostId].CopiesOwned = p.DiscoveredGhosts[ghostId].CopiesOwned + 1
 	end
 	p.TotalParanormalSolved = p.TotalParanormalSolved + 1
 	EconomyService.SyncPlayerState(player)
-	return isNew
+	return isNew, p.DiscoveredGhosts[ghostId].CopiesOwned
 end
 
 function EconomyService.HasDiscoveredGhost(player, ghostId)
 	local p = EconomyService.GetProfile(player)
-	return p and p.DiscoveredGhosts[ghostId] ~= nil
+	return p and p.DiscoveredGhosts[ghostId] ~= nil and p.DiscoveredGhosts[ghostId].CopiesOwned >= 1
+end
+
+function EconomyService.LevelUpGhost(player, ghostId)
+	local p = EconomyService.GetProfile(player)
+	if not p then return false, "Profile not found" end
+	local ghost = p.DiscoveredGhosts[ghostId]
+	if not ghost then return false, "Ghost not discovered" end
+
+	-- Requires 1 duplicate copy per level (e.g. Lv 1 -> Lv 2 needs at least 2 copies total)
+	if ghost.CopiesOwned < 2 then
+		return false, string.format("Need at least 1 duplicate copy to level up! (Owned: %d)", ghost.CopiesOwned)
+	end
+
+	if ghost.Level >= 5 then
+		return false, "Ghost is already at maximum level!"
+	end
+
+	ghost.CopiesOwned = ghost.CopiesOwned - 1
+	ghost.Level = ghost.Level + 1
+	EconomyService.SyncPlayerState(player)
+	return true, ghost.Level, ghost.CopiesOwned
+end
+
+function EconomyService.AssignStaff(player, slotIndex, ghostId)
+	local p = EconomyService.GetProfile(player)
+	if not p then return false, "Profile not found" end
+	if slotIndex ~= 1 and slotIndex ~= 2 then
+		return false, "Invalid staff slot"
+	end
+
+	local ghost = p.DiscoveredGhosts[ghostId]
+	if not ghost or ghost.CopiesOwned < 1 then
+		return false, "You do not own this ghost"
+	end
+
+	-- Check if already assigned to another slot
+	local otherSlot = (slotIndex == 1 and 2 or 1)
+	if p.AssignedStaff[otherSlot] == ghostId and ghost.CopiesOwned < 2 then
+		return false, "This ghost is already assigned to Slot " .. otherSlot
+	end
+
+	p.AssignedStaff[slotIndex] = ghostId
+	EconomyService.SyncPlayerState(player)
+	return true, p.AssignedStaff
+end
+
+function EconomyService.UnassignStaff(player, slotIndex)
+	local p = EconomyService.GetProfile(player)
+	if not p then return false, "Profile not found" end
+	if slotIndex ~= 1 and slotIndex ~= 2 then
+		return false, "Invalid staff slot"
+	end
+
+	p.AssignedStaff[slotIndex] = nil
+	EconomyService.SyncPlayerState(player)
+	return true, p.AssignedStaff
+end
+
+function EconomyService.GetAssignedStaff(player)
+	local p = EconomyService.GetProfile(player)
+	return p and p.AssignedStaff or { [1] = nil, [2] = nil }
 end
 
 function EconomyService.SetTutorialStep(player, step)
