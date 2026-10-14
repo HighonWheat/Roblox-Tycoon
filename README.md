@@ -106,5 +106,5 @@ Ghostshift/
 ---
 
 ## 👨‍💻 Developer
-- **HighonWheat** (HighonWheat@users.noreply.github.com)
+- **HighonWheat** (yogiankit112@gmail.com)
 - Repository: [HighonWheat/Roblox-Tycoon](https://github.com/HighonWheat/Roblox-Tycoon.git)
