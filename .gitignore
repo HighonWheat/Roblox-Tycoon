@@ -1,0 +1,8 @@
+# Roblox temp / build artifacts
+*.rbxlx.lock
+*.rbxl.lock
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
