@@ -1,5 +1,7 @@
+-- ServerScriptService/Services/EconomyService.luau
 local RepStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
+local SSS = game:GetService("ServerScriptService")
 
 local GameConfig = require(RepStorage.Configs.GameConfig)
 local GhostConfig = require(RepStorage.Configs.GhostConfig)
@@ -11,6 +13,8 @@ _G.GhostshiftProfiles = _G.GhostshiftProfiles or {}
 local profiles = _G.GhostshiftProfiles
 EconomyService.Profiles = _G.GhostshiftProfiles
 local locks = {}
+
+local DataService = require(SSS.Services.DataService)
 
 local function getPlayerKey(player)
 	if typeof(player) == "Instance" and player:IsA("Player") then
@@ -24,7 +28,7 @@ end
 
 function EconomyService.CalculateIncomeRate(profile)
 	local total = 0
-	for roomId, level in pairs(profile.RoomLevels) do
+	for roomId, level in pairs(profile.RoomLevels or {}) do
 		local roomConfig = GameConfig.Rooms[roomId]
 		if roomConfig and roomConfig.Upgrades[level] then
 			total = total + roomConfig.Upgrades[level].Income
@@ -35,27 +39,15 @@ end
 
 function EconomyService.InitializePlayer(player)
 	local key = getPlayerKey(player)
-	profiles[key] = {
-		Coins = GameConfig.StartingCoins,
-		Ectoplasm = GameConfig.StartingEctoplasm or 0,
-		RoomLevels = {
-			Room1 = 1,
-			Room2 = 1,
-		},
-		DiscoveredGhosts = {}, -- [ghostId] = { Id = ghostId, Level = 1, CopiesOwned = 1, DiscoveredAt = os.time() }
-		AssignedStaff = {
-			[1] = nil,
-			[2] = nil,
-		},
-		TutorialStep = 1,
-		TotalGuestsServed = 0,
-		TotalParanormalSolved = 0,
-	}
+	local profile, isNew, offlineRewards = DataService.LoadPlayerProfile(player)
+
+	profiles[key] = profile
 	if typeof(player) == "Instance" then
-		profiles[player] = profiles[key]
+		profiles[player] = profile
 	end
+
 	EconomyService.SyncPlayerState(player)
-	return profiles[key]
+	return profile, isNew, offlineRewards
 end
 
 function EconomyService.GetProfile(player)
@@ -77,7 +69,11 @@ function EconomyService.SyncPlayerState(player)
 	local p = EconomyService.GetProfile(player)
 	if not p then return end
 	local incomeRate = EconomyService.CalculateIncomeRate(p)
-	local tutorialData = GameConfig.Tutorial[p.TutorialStep] or GameConfig.Tutorial[5]
+	local tutStep = p.TutorialStep or 1
+	local tutorialData = (GameConfig.Tutorial and GameConfig.Tutorial[tutStep]) or {
+		Title = "Ghostshift Hotelier",
+		Description = "Manage your hotel and capture roaming spirits!"
+	}
 
 	if typeof(player) == "Instance" and player:IsA("Player") then
 		PlayerStateUpdated:FireClient(player, {
@@ -88,10 +84,11 @@ function EconomyService.SyncPlayerState(player)
 			DiscoveredGhosts = p.DiscoveredGhosts,
 			AssignedStaff = p.AssignedStaff,
 			TutorialStep = p.TutorialStep,
+			TutorialDismissed = p.TutorialDismissed == true,
 			TutorialTitle = tutorialData.Title,
 			TutorialDescription = tutorialData.Description,
-			TotalGuestsServed = p.TotalGuestsServed,
-			TotalParanormalSolved = p.TotalParanormalSolved,
+			TotalGuestsServed = p.TotalGuestsServed or 0,
+			TotalParanormalSolved = p.TotalParanormalSolved or 0,
 		})
 	end
 end
@@ -153,7 +150,13 @@ function EconomyService.AddDiscoveredGhost(player, ghostId)
 	else
 		p.DiscoveredGhosts[ghostId].CopiesOwned = p.DiscoveredGhosts[ghostId].CopiesOwned + 1
 	end
-	p.TotalParanormalSolved = p.TotalParanormalSolved + 1
+	p.TotalParanormalSolved = (p.TotalParanormalSolved or 0) + 1
+	
+	-- Advance tutorial to step 5 (Staff Assignment) if on step 4
+	if p.TutorialStep == 4 then
+		EconomyService.SetTutorialStep(player, 5)
+	end
+	
 	EconomyService.SyncPlayerState(player)
 	return isNew, p.DiscoveredGhosts[ghostId].CopiesOwned
 end
@@ -169,7 +172,7 @@ function EconomyService.LevelUpGhost(player, ghostId)
 	local ghost = p.DiscoveredGhosts[ghostId]
 	if not ghost then return false, "Ghost not discovered" end
 
-	-- Requires 1 duplicate copy per level (e.g. Lv 1 -> Lv 2 needs at least 2 copies total)
+	-- Requires 1 duplicate copy per level
 	if ghost.CopiesOwned < 2 then
 		return false, string.format("Need at least 1 duplicate copy to level up! (Owned: %d)", ghost.CopiesOwned)
 	end
@@ -196,13 +199,19 @@ function EconomyService.AssignStaff(player, slotIndex, ghostId)
 		return false, "You do not own this ghost"
 	end
 
-	-- Check if already assigned to another slot
+	-- Check if already assigned to other slot
 	local otherSlot = (slotIndex == 1 and 2 or 1)
 	if p.AssignedStaff[otherSlot] == ghostId and ghost.CopiesOwned < 2 then
 		return false, "This ghost is already assigned to Slot " .. otherSlot
 	end
 
 	p.AssignedStaff[slotIndex] = ghostId
+
+	-- Advance tutorial to step 6 (Master Hotelier) if on step 5
+	if p.TutorialStep == 5 then
+		EconomyService.SetTutorialStep(player, 6)
+	end
+
 	EconomyService.SyncPlayerState(player)
 	return true, p.AssignedStaff
 end
@@ -236,7 +245,7 @@ end
 function EconomyService.IncrementGuestsServed(player)
 	local p = EconomyService.GetProfile(player)
 	if not p then return end
-	p.TotalGuestsServed = p.TotalGuestsServed + 1
+	p.TotalGuestsServed = (p.TotalGuestsServed or 0) + 1
 	if p.TutorialStep == 1 then
 		EconomyService.SetTutorialStep(player, 2)
 	end
@@ -257,6 +266,9 @@ end
 
 function EconomyService.RemovePlayer(player)
 	local key = getPlayerKey(player)
+	if DataService then
+		DataService.UnloadPlayer(player)
+	end
 	profiles[key] = nil
 	if typeof(player) == "Instance" then
 		profiles[player] = nil

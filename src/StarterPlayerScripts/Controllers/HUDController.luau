@@ -1,4 +1,4 @@
--- StarterPlayerScripts/Controllers/HUDController.lua
+-- StarterPlayerScripts/Controllers/HUDController.luau
 local Players = game:GetService("Players")
 local RepStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -9,20 +9,24 @@ local GhostConfig = require(RepStorage.Configs.GhostConfig)
 local Formatters = require(RepStorage.Shared.Formatters)
 
 local Network = RepStorage.Network
-local RequestUpgrade = Network.RequestUpgrade
-local PlayerStateUpdated = Network.PlayerStateUpdated
-local GuestStateChanged = Network.GuestStateChanged
-local ParanormalEventUpdated = Network.ParanormalEventUpdated
-local SubmitCaptureAttempt = Network.SubmitCaptureAttempt
-local AssignStaff = Network.AssignStaff
-local UnassignStaff = Network.UnassignStaff
-local LevelUpGhost = Network.LevelUpGhost
+local RequestUpgrade = Network:WaitForChild("RequestUpgrade")
+local PlayerStateUpdated = Network:WaitForChild("PlayerStateUpdated")
+local GuestStateChanged = Network:WaitForChild("GuestStateChanged")
+local ParanormalEventUpdated = Network:WaitForChild("ParanormalEventUpdated")
+local SubmitCaptureAttempt = Network:WaitForChild("SubmitCaptureAttempt")
+local AssignStaff = Network:WaitForChild("AssignStaff")
+local UnassignStaff = Network:WaitForChild("UnassignStaff")
+local LevelUpGhost = Network:WaitForChild("LevelUpGhost")
+local ClaimOfflineRewards = Network:WaitForChild("ClaimOfflineRewards")
+local OfflineRewardReady = Network:WaitForChild("OfflineRewardReady")
+local DismissTutorial = Network:WaitForChild("DismissTutorial")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local hud = playerGui:WaitForChild("HotelHUD")
 local captureGui = playerGui:WaitForChild("CaptureMinigameGui")
 local journalGui = playerGui:WaitForChild("GhostJournalGui")
+local wbGui = playerGui:WaitForChild("WelcomeBackGui")
 
 local HUDController = {}
 
@@ -36,6 +40,7 @@ function HUDController.Init()
 	local tutBanner = hud:WaitForChild("TutorialBanner")
 	local tutTitle = tutBanner.TitleLabel
 	local tutDesc = tutBanner.DescLabel
+	local tutDismissBtn = tutBanner:FindFirstChild("DismissBtn")
 
 	local alertBanner = hud:WaitForChild("HauntingAlertBanner")
 	local alertLabel = alertBanner.AlertLabel
@@ -64,6 +69,16 @@ function HUDController.Init()
 	local minigameStatus = minigameModal.StatusLabel
 	local abortBtn = minigameModal.AbortBtn
 
+	-- Welcome Back Modal Elements
+	local wbBackdrop = wbGui:WaitForChild("Backdrop")
+	local wbModal = wbBackdrop:WaitForChild("MainModal")
+	local wbCloseBtn = wbModal.HeaderFrame.CloseBtn
+	local wbAwayLabel = wbModal.AwayBadge.AwayLabel
+	local wbCoinsCard = wbModal.CardsContainer.CoinsCard
+	local wbEctoCard = wbModal.CardsContainer.EctoCard
+	local wbClaimBtn = wbModal.ClaimBtn
+	local wbToast = wbModal.ToastLabel
+
 	local isMinigameActive = false
 	local currentSessionToken = nil
 	local minigameConnection = nil
@@ -71,11 +86,29 @@ function HUDController.Init()
 	local oscillationSpeed = 2.2
 	local latestData = nil
 
+	-- Modal Mutual Exclusion (ensures only 1 modal is open on screen)
+	local function closeAllModalsExcept(targetModal)
+		if targetModal ~= upgradeModal then
+			upgradeModal.Visible = false
+		end
+		if targetModal ~= journalModal then
+			journalModal.Visible = false
+		end
+		if targetModal ~= wbBackdrop then
+			wbBackdrop.Visible = false
+		end
+		if targetModal ~= minigameModal and isMinigameActive then
+			HUDController.CloseMinigame()
+		end
+	end
+
 	-- Modal Toggle Handlers
 	toggleUpgradeBtn.MouseButton1Click:Connect(function()
-		upgradeModal.Visible = not upgradeModal.Visible
-		if upgradeModal.Visible then
-			journalModal.Visible = false
+		if not upgradeModal.Visible then
+			closeAllModalsExcept(upgradeModal)
+			upgradeModal.Visible = true
+		else
+			upgradeModal.Visible = false
 		end
 	end)
 
@@ -84,9 +117,11 @@ function HUDController.Init()
 	end)
 
 	toggleJournalBtn.MouseButton1Click:Connect(function()
-		journalModal.Visible = not journalModal.Visible
-		if journalModal.Visible then
-			upgradeModal.Visible = false
+		if not journalModal.Visible then
+			closeAllModalsExcept(journalModal)
+			journalModal.Visible = true
+		else
+			journalModal.Visible = false
 		end
 	end)
 
@@ -97,6 +132,21 @@ function HUDController.Init()
 	abortBtn.MouseButton1Click:Connect(function()
 		HUDController.CloseMinigame()
 	end)
+
+	-- Welcome Back Close Handler
+	wbCloseBtn.MouseButton1Click:Connect(function()
+		wbBackdrop.Visible = false
+	end)
+
+	-- Tutorial Dismiss Handler
+	if tutDismissBtn then
+		tutDismissBtn.MouseButton1Click:Connect(function()
+			tutBanner.Visible = false
+			task.spawn(function()
+				DismissTutorial:InvokeServer()
+			end)
+		end)
+	end
 
 	local function showUpgradeToast(message, isSuccess)
 		upgradeToast.Text = message
@@ -159,11 +209,9 @@ function HUDController.Init()
 				return
 			end
 
-			-- Determine which slot to assign to
 			local assigned = latestData.AssignedStaff or {}
 			local targetSlot = 1
 			if assigned[1] == ghostId then
-				-- Already in Slot 1; try switching to Slot 2 or notify
 				if assigned[2] == nil then
 					targetSlot = 2
 				else
@@ -174,13 +222,11 @@ function HUDController.Init()
 				showJournalToast(ghostId .. " is already on duty in Slot 2!", false)
 				return
 			else
-				-- Find first empty slot
 				if assigned[1] == nil then
 					targetSlot = 1
 				elseif assigned[2] == nil then
 					targetSlot = 2
 				else
-					-- Both full, replace slot 1
 					targetSlot = 1
 				end
 			end
@@ -200,6 +246,61 @@ function HUDController.Init()
 			showJournalToast(msg, success)
 		end)
 	end
+
+	-- Welcome Back Offline Rewards Claim Handler
+	local isClaiming = false
+	wbClaimBtn.MouseButton1Click:Connect(function()
+		if isClaiming then return end
+		isClaiming = true
+		wbClaimBtn.Text = "CLAIMING..."
+		wbClaimBtn.Active = false
+
+		local result = ClaimOfflineRewards:InvokeServer()
+		if result and result.Success then
+			wbClaimBtn.Text = "✨ CLAIMED! ✨"
+			wbClaimBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 120)
+			wbToast.Text = string.format("Added +%d 🪙 and +%d 🟣 to your vault!", result.ClaimedCoins or 0, result.ClaimedEctoplasm or 0)
+			wbToast.TextColor3 = Color3.fromRGB(120, 255, 180)
+			task.delay(1.5, function()
+				wbBackdrop.Visible = false
+				isClaiming = false
+				wbClaimBtn.Text = "💰 CLAIM REWARDS"
+				wbClaimBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 110)
+				wbClaimBtn.Active = true
+			end)
+		else
+			wbToast.Text = result and result.Message or "Claim error. Please try again."
+			wbToast.TextColor3 = Color3.fromRGB(255, 120, 120)
+			wbClaimBtn.Text = "CLAIM REWARDS"
+			wbClaimBtn.Active = true
+			isClaiming = false
+		end
+	end)
+
+	-- Handle OfflineRewardReady from server
+	OfflineRewardReady.OnClientEvent:Connect(function(rewardData)
+		if not rewardData then return end
+		local durationStr = Formatters.FormatDuration(rewardData.ElapsedSeconds or 0)
+		wbAwayLabel.Text = string.format("⏳ Away for %s (Capped at 3h • 50%% passive rate)", durationStr)
+		wbCoinsCard.AmountLabel.Text = string.format("+%s Coins", Formatters.FormatNumber(rewardData.Coins or 0))
+
+		if rewardData.Ectoplasm and rewardData.Ectoplasm > 0 then
+			wbEctoCard.Visible = true
+			wbEctoCard.AmountLabel.Text = string.format("+%s Ectoplasm", Formatters.FormatNumber(rewardData.Ectoplasm))
+		else
+			wbEctoCard.Visible = false
+		end
+
+		wbToast.Text = "Press Claim to add earnings to your vault!"
+		wbToast.TextColor3 = Color3.fromRGB(200, 190, 220)
+		wbClaimBtn.Text = "💰 CLAIM REWARDS"
+		wbClaimBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 110)
+		wbClaimBtn.Active = true
+		isClaiming = false
+
+		closeAllModalsExcept(wbBackdrop)
+		wbBackdrop.Visible = true
+	end)
 
 	-- Update Ghost Journal UI
 	local function updateJournalUI(data)
@@ -254,7 +355,6 @@ function HUDController.Init()
 					card.PerkLabel.TextColor3 = Color3.fromRGB(240, 230, 255)
 					if stroke then stroke.Color = def.Color end
 
-					-- Check assignment status
 					local isAssignedTo = nil
 					if assigned[1] == ghostId then isAssignedTo = 1
 					elseif assigned[2] == ghostId then isAssignedTo = 2 end
@@ -269,7 +369,6 @@ function HUDController.Init()
 						assignBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 					end
 
-					-- Level Up status
 					if lv >= 5 then
 						levelUpBtn.Text = "★ MAX LEVEL ★"
 						levelUpBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 55)
@@ -284,7 +383,6 @@ function HUDController.Init()
 						levelUpBtn.TextColor3 = Color3.fromRGB(140, 130, 150)
 					end
 				else
-					-- Undiscovered silhouette state
 					card.NameLabel.Text = "??? (Undiscovered)"
 					card.NameLabel.TextColor3 = Color3.fromRGB(120, 110, 130)
 					card.RarityBadge.Text = string.format("[%s] • Locked", string.upper(def.Rarity))
@@ -320,8 +418,14 @@ function HUDController.Init()
 		end
 		ghostLabel.Text = string.format("Ghosts: %d/3", ghostCount)
 
-		tutTitle.Text = data.TutorialTitle or "Ghostshift Tutorial"
-		tutDesc.Text = data.TutorialDescription or ""
+		-- Tutorial visibility check
+		if data.TutorialDismissed == true or (data.TutorialStep and data.TutorialStep > 6) then
+			tutBanner.Visible = false
+		else
+			tutBanner.Visible = true
+			tutTitle.Text = data.TutorialTitle or "Ghostshift Tutorial"
+			tutDesc.Text = data.TutorialDescription or ""
+		end
 
 		-- Update Room Upgrade Cards
 		for _, roomId in ipairs({"Room1", "Room2"}) do
@@ -454,6 +558,7 @@ function HUDController.Init()
 			alertBanner.BackgroundColor3 = Color3.fromRGB(18, 45, 40)
 			alertLabel.Text = string.format("⚡ SPIRIT MANIFESTED! Approach %s to contain him!", eventData.GhostName or "Jasper")
 		elseif eventData.Event == "OpenCaptureMinigame" then
+			closeAllModalsExcept(minigameModal)
 			currentSessionToken = eventData.Token
 			isMinigameActive = true
 

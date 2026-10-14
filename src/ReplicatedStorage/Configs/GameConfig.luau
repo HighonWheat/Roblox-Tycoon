@@ -1,3 +1,4 @@
+-- ReplicatedStorage/Configs/GameConfig.luau
 local GameConfig = {
 	StartingCoins = 100,
 	StartingEctoplasm = 0,
@@ -5,6 +6,14 @@ local GameConfig = {
 	
 	GuestArrivalInterval = 7, -- seconds between arrival checks per plot
 	BaseStayDuration = 8,      -- seconds a guest occupies a room
+	
+	-- Capped Offline Earnings Tuning
+	OfflineEarnings = {
+		RateMultiplier = 0.50,       -- 50% of eligible passive rate
+		MaxDurationSeconds = 10800,  -- 3 hours maximum
+		MinDurationSeconds = 60,     -- 1 minute minimum away to earn
+		AutosaveInterval = 180,      -- 3 minutes between automatic profile saves
+	},
 	
 	-- Paranormal Event Tuning
 	Paranormal = {
@@ -20,8 +29,8 @@ local GameConfig = {
 		-- Rewards
 		BaseEctoplasmReward = 35,
 		ClueInvestigationEctoplasm = 5,
-		GhostDiscoverChance = 0.75, -- 75% chance to discover Jasper
-		ConsolationCoins = 50,      -- extra coins if ghost discovery roll fails
+		GhostDiscoverChance = 0.75,
+		ConsolationCoins = 50,
 	},
 	
 	Rooms = {
@@ -91,27 +100,32 @@ local GameConfig = {
 		[1] = {
 			Step = 1,
 			Title = "Welcome to Ghostshift!",
-			Description = "A guest is checking in. Wait for their stay to complete and collect your first coins!",
+			Description = "A ghostly guest is arriving! Observe their stay to earn your first coin payout.",
 		},
 		[2] = {
 			Step = 2,
 			Title = "First Renovation",
-			Description = "Upgrade Room 1 to Level 2 (Cost: 50 coins) at the room pad or upgrade menu!",
+			Description = "Upgrade Room 1 to Level 2 (50 coins) at the room pad or Renovations menu!",
 		},
 		[3] = {
 			Step = 3,
 			Title = "Paranormal Investigation",
-			Description = "A haunting has begun! Investigate the clues in the room to track down the spirit.",
+			Description = "A disturbance detected! Investigate the clues in the haunted room.",
 		},
 		[4] = {
 			Step = 4,
 			Title = "Ghost Containment",
-			Description = "Initiate the capture challenge and trap Jasper the Bellhop!",
+			Description = "The entity manifested! Initiate containment and trap the spirit in the minigame.",
 		},
 		[5] = {
 			Step = 5,
+			Title = "Staff Assignment",
+			Description = "Put your spirit to work! Open the Ghost Journal and assign them to hotel duty.",
+		},
+		[6] = {
+			Step = 6,
 			Title = "Master Hotelier",
-			Description = "Congratulations! Your hotel is thriving with satisfied spirits!",
+			Description = "Hotel fully operational! Expand rooms, hire more spirits, and progress your tycoon!",
 		}
 	}
 }

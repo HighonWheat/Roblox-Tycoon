@@ -1,3 +1,4 @@
+-- ServerScriptService/ServerMain.server.luau
 local RepStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Players = game:GetService("Players")
@@ -8,6 +9,7 @@ local HotelService = require(ServerScriptService.Services.HotelService)
 local GuestService = require(ServerScriptService.Services.GuestService)
 local ParanormalService = require(ServerScriptService.Services.ParanormalService)
 local StaffService = require(ServerScriptService.Services.StaffService)
+local DataService = require(ServerScriptService.Services.DataService)
 
 local Network = RepStorage.Network
 local RequestUpgrade = Network.RequestUpgrade
@@ -17,6 +19,9 @@ local SubmitCaptureAttempt = Network.SubmitCaptureAttempt
 local AssignStaff = Network.AssignStaff
 local UnassignStaff = Network.UnassignStaff
 local LevelUpGhost = Network.LevelUpGhost
+local ClaimOfflineRewards = Network.ClaimOfflineRewards
+local OfflineRewardReady = Network.OfflineRewardReady
+local DismissTutorial = Network.DismissTutorial
 
 -- Handle Upgrade Request (from HUD or Pad)
 local function handleUpgradeRequest(player, roomId)
@@ -62,10 +67,9 @@ local function handleUpgradeRequest(player, roomId)
 		profile.RoomLevels[roomId] = newLevel
 		HotelService.ApplyRoomUpgradeVisuals(plot, roomId, newLevel)
 
+		-- Tutorial advancement: Upgrading Room 1 to Lv 2 completes Step 2
 		if roomId == "Room1" and newLevel >= 2 and profile.TutorialStep == 2 then
 			EconomyService.SetTutorialStep(player, 3)
-		elseif roomId == "Room2" and newLevel >= 2 and profile.TutorialStep == 3 then
-			EconomyService.SetTutorialStep(player, 4)
 		end
 
 		EconomyService.SyncPlayerState(player)
@@ -109,7 +113,16 @@ LevelUpGhost.OnServerInvoke = function(player, ghostId)
 	return StaffService.LevelUpGhost(player, ghostId)
 end
 
+ClaimOfflineRewards.OnServerInvoke = function(player)
+	return DataService.ClaimOfflineRewards(player)
+end
+
+DismissTutorial.OnServerInvoke = function(player)
+	return DataService.DismissTutorial(player)
+end
+
 -- Init Services
+DataService.Init(EconomyService)
 HotelService.Init(EconomyService, handleUpgradeRequest)
 GuestService.Init(EconomyService, HotelService)
 GuestService.Start()
@@ -122,13 +135,39 @@ StaffService.Start()
 
 local function setupPlayer(player)
 	print("[Ghostshift] Setting up player:", player.Name, player.UserId)
-	local profile = EconomyService.InitializePlayer(player)
+	local profile, isNew, offlineRewards = EconomyService.InitializePlayer(player)
 	print("[Ghostshift] Profile initialized. Starting Coins:", profile and profile.Coins)
+	
 	local plot = HotelService.AssignPlot(player)
 	if not plot then
 		warn("[Ghostshift] No plots available for " .. player.Name)
 	else
 		print("[Ghostshift] Assigned plot:", plot.Name, "to", player.Name)
+		-- Restore room upgrade visuals for loaded profile
+		if profile and profile.RoomLevels then
+			for roomId, level in pairs(profile.RoomLevels) do
+				if level > 1 then
+					HotelService.ApplyRoomUpgradeVisuals(plot, roomId, level)
+				end
+			end
+		end
+		-- Restore visual staff models for assigned staff
+		if profile and profile.AssignedStaff then
+			for slotIndex, ghostId in pairs(profile.AssignedStaff) do
+				if ghostId then
+					StaffService.UpdatePlotVisualStaff(player, slotIndex, ghostId)
+				end
+			end
+		end
+	end
+
+	-- Notify client if offline earnings are pending
+	if offlineRewards and (offlineRewards.Coins > 0 or offlineRewards.Ectoplasm > 0) then
+		task.delay(1.5, function()
+			if player and player.Parent then
+				OfflineRewardReady:FireClient(player, offlineRewards)
+			end
+		end)
 	end
 end
 
@@ -148,4 +187,8 @@ Players.PlayerRemoving:Connect(function(player)
 	EconomyService.RemovePlayer(player)
 end)
 
-print("[Ghostshift] ServerMain (Phase 3 with StaffService and GhostJournal) initialized successfully.")
+game:BindToClose(function()
+	DataService.BindToClose()
+end)
+
+print("[Ghostshift] ServerMain (Phase 4: Persistence, Capped Offline Earnings & Onboarding) initialized successfully.")
